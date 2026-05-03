@@ -52,9 +52,30 @@ install_arch() {
         python \
         libarchive \
         unzip \
-        rust \
         qemu-system-x86 \
         qemu-ui-gtk
+
+    # Rust: prefer rustup (already installed) over pacman's rust package.
+    # They conflict — installing rust while rustup owns cargo breaks pacman.
+    if command -v cargo &>/dev/null; then
+        echo -e "${GREEN}✓ cargo already available (rustup managed)${NC}"
+        # Ensure at least one stable toolchain is installed
+        if command -v rustup &>/dev/null; then
+            rustup toolchain install stable --no-self-update 2>/dev/null || true
+            rustup default stable 2>/dev/null || true
+            echo -e "${GREEN}✓ rustup stable toolchain confirmed${NC}"
+        fi
+    elif command -v rustup &>/dev/null; then
+        echo -e "${BLUE}rustup present but no toolchain — installing stable...${NC}"
+        rustup toolchain install stable --no-self-update
+        rustup default stable
+        echo -e "${GREEN}✓ rustup stable toolchain installed${NC}"
+    else
+        echo -e "${BLUE}Installing rust via pacman...${NC}"
+        sudo pacman -S --needed --noconfirm rust
+        echo -e "${GREEN}✓ rust installed${NC}"
+    fi
+
     echo -e "${GREEN}✓ Arch Linux prerequisites installed${NC}"
 }
 
@@ -224,6 +245,20 @@ if [ ${#MISSING_TOOLS[@]} -gt 0 ]; then
     done
     echo -e "${YELLOW}Please install them manually before proceeding.${NC}"
     exit 1
+fi
+
+# Disk space check — build needs ~50 GB free (KDE rootfs ~20 GB, squashfs ~5 GB,
+# kernel build ~10 GB, plus intermediate artifacts)
+echo ""
+echo -e "${BLUE}Checking available disk space...${NC}"
+BUILD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AVAIL_KB=$(df -k "${BUILD_ROOT}" | awk 'NR==2 {print $4}')
+AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
+if [ "${AVAIL_GB}" -lt 50 ]; then
+    echo -e "${YELLOW}WARNING: Only ${AVAIL_GB} GB available in ${BUILD_ROOT}${NC}"
+    echo -e "${YELLOW}         Build needs ~50 GB. You may run out of space during step 3 or 6.${NC}"
+else
+    echo -e "${GREEN}✓ ${AVAIL_GB} GB available — sufficient for full build${NC}"
 fi
 
 echo ""

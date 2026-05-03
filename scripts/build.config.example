@@ -18,7 +18,7 @@
 # PROJECT_ROOT: Absolute path to the JARVIS OS project root directory
 # This should be the directory containing the scripts/ folder
 # Example: /home/user/jarvisos or /path/to/jarvisos
-PROJECT_ROOT=""
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # SCRIPTS_DIR: Path to the scripts directory (relative to PROJECT_ROOT)
 # This is where all build scripts (01-extract-iso.sh, etc.) are located

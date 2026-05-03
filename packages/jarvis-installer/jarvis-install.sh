@@ -932,21 +932,31 @@ rm -f /etc/polkit-1/rules.d/50-liveuser.rules 2>/dev/null || true
 sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap block filesystems)/' \
     /etc/mkinitcpio.conf
 
-# Remove live linux kernel files (linux-jarvisos is the installed kernel)
-rm -f /boot/vmlinuz-linux /boot/initramfs-linux.img /boot/initramfs-linux-fallback.img
-rm -f /etc/mkinitcpio.d/linux.preset 2>/dev/null || true
-
 # mkinitcpio
 if [ "${KERNEL_PKG}" = "linux-jarvisos" ]; then
+    # Remove stock linux files — linux-jarvisos is the installed kernel
+    rm -f /boot/vmlinuz-linux /boot/initramfs-linux.img /boot/initramfs-linux-fallback.img
+    rm -f /etc/mkinitcpio.d/linux.preset 2>/dev/null || true
     if [ -f /etc/mkinitcpio.d/linux-jarvisos.preset ]; then
         mkinitcpio -p linux-jarvisos || warn "mkinitcpio failed — check manually after install"
     elif [ -f /boot/initramfs-linux-jarvisos.img ]; then
-        echo "linux-jarvisos initramfs already present"
+        # initramfs present but preset missing — the file was copied from the live
+        # medium and was built with archiso hooks (not block/filesystems).
+        # The installed system will NOT boot from it.  Re-generate using the
+        # kernel version string found in /usr/lib/modules/.
+        warn "linux-jarvisos.preset missing — rebuilding initramfs directly"
+        _kver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos')
+        if [ -n "${_kver}" ]; then
+            mkinitcpio -k "${_kver}" -g /boot/initramfs-linux-jarvisos.img \
+                || warn "mkinitcpio failed — check /boot/ manually after install"
+        else
+            warn "Cannot find linux-jarvisos modules in /usr/lib/modules/ — installed system may not boot"
+        fi
     else
-        warn "No linux-jarvisos preset found — bootloader may not work"
+        warn "No linux-jarvisos kernel or preset found — bootloader will not work"
     fi
 else
-    # Fallback: build initramfs for stock linux kernel
+    # Stock linux kernel fallback — keep vmlinuz-linux and linux.preset
     if [ -f /etc/mkinitcpio.d/linux.preset ]; then
         mkinitcpio -p linux || warn "mkinitcpio failed"
     fi
@@ -1123,6 +1133,70 @@ find_jarvis_source() {
     return 1
 }
 
+# ── GPU vendor detection ──────────────────────────────────────────────────
+# Returns: "nvidia", "amd", or "cpu"
+_detect_gpu_vendor() {
+    if lspci 2>/dev/null | grep -qi 'nvidia' || \
+       lsmod 2>/dev/null | grep -q '^nvidia '; then
+        echo "nvidia"; return
+    fi
+    if lsmod 2>/dev/null | grep -q '^amdgpu '; then
+        echo "amd"; return
+    fi
+    if lspci 2>/dev/null | grep -qi 'radeon\|amdgpu'; then
+        echo "amd"; return
+    fi
+    echo "cpu"
+}
+
+# ── Install Ollama with GPU-appropriate binary ────────────────────────────
+_install_ollama_gpu() {
+    local gpu; gpu=$(_detect_gpu_vendor)
+    local arch; arch=$(uname -m)
+    info "GPU detected: ${gpu} — installing Ollama accordingly"
+
+    case "${gpu}" in
+        nvidia)
+            # install.sh auto-detects CUDA via nvidia-smi and installs libs
+            if curl -fsSL https://ollama.com/install.sh | sh; then
+                ok "Ollama installed with NVIDIA CUDA support"
+            else
+                warn "Ollama CUDA install failed — falling back to CPU binary"
+                local _url="https://ollama.com/download/ollama-linux-amd64"
+                [ "${arch}" = "aarch64" ] && _url="https://ollama.com/download/ollama-linux-arm64"
+                curl -fsSL -o /usr/local/bin/ollama "${_url}" && chmod +x /usr/local/bin/ollama || true
+            fi
+            ;;
+        amd)
+            if [ "${arch}" = "x86_64" ]; then
+                if curl -fsSL -o /usr/local/bin/ollama \
+                        https://ollama.com/download/ollama-linux-amd64-rocm; then
+                    chmod +x /usr/local/bin/ollama
+                    ok "Ollama installed with AMD ROCm support"
+                else
+                    warn "ROCm binary download failed — falling back to install.sh"
+                    curl -fsSL https://ollama.com/install.sh | sh || true
+                fi
+            else
+                curl -fsSL https://ollama.com/install.sh | sh || true
+            fi
+            # Grant ollama service user access to GPU render/DRI devices
+            getent group render >/dev/null 2>&1 && usermod -aG render ollama 2>/dev/null || true
+            usermod -aG video ollama 2>/dev/null || true
+            ;;
+        cpu|*)
+            local _url="https://ollama.com/download/ollama-linux-amd64"
+            [ "${arch}" = "aarch64" ] && _url="https://ollama.com/download/ollama-linux-arm64"
+            if curl -fsSL -o /usr/local/bin/ollama "${_url}"; then
+                chmod +x /usr/local/bin/ollama
+                ok "Ollama installed (CPU mode)"
+            else
+                warn "Ollama download failed — install manually: curl -fsSL https://ollama.com/install.sh | sh"
+            fi
+            ;;
+    esac
+}
+
 # ── Install JARVIS OS components on existing Arch system ───────────────────
 install_packages_mode() {
     need_root
@@ -1180,6 +1254,90 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
     pacman -S --noconfirm --needed linux linux-headers linux-firmware \
         || warn "Kernel packages had issues"
     ok "Kernel packages installed"
+
+    # ── linux-jarvisos custom kernel ─────────────────────────────────────
+    # Install alongside the existing kernel — does not remove it.
+    # Looks for pre-built packages first, then offers to build from source.
+    info "Installing linux-jarvisos custom kernel..."
+    _install_linux_jarvisos() {
+        # 1. Already installed?
+        if pacman -Q linux-jarvisos >/dev/null 2>&1; then
+            ok "linux-jarvisos already installed ($(pacman -Q linux-jarvisos | awk '{print $2}'))"
+            return 0
+        fi
+
+        # 2. Pre-built package nearby (sibling build/kernel-pkg/ from ISO build)?
+        local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        local _pkg_dir="${_script_dir}/../../build/kernel-pkg"
+        local _pkg; _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+                            ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
+                            | sort -V | tail -1 || true)
+        local _hdr; _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
+                            2>/dev/null | sort -V | tail -1 || true)
+
+        if [ -n "${_pkg}" ] && [ -n "${_hdr}" ]; then
+            info "Found pre-built packages: $(basename "${_pkg}")"
+            pacman -U --noconfirm "${_pkg}" "${_hdr}" \
+                && ok "linux-jarvisos installed from pre-built packages" && return 0
+            warn "Pre-built package install failed — falling through to build from source"
+        fi
+
+        # 3. Build from source if linux-jarvisos submodule is available
+        local _kernel_src="${_script_dir}/../../linux-jarvisos"
+        local _build_script="${_script_dir}/../../scripts/03b-build-kernel.sh"
+        if [ -f "${_kernel_src}/Makefile" ] && [ -f "${_build_script}" ]; then
+            info "Building linux-jarvisos from source (may take 20-60 min)..."
+            if command -v makepkg >/dev/null 2>&1; then
+                bash "${_build_script}" --host-install \
+                    && ok "linux-jarvisos built and installed from source" && return 0
+                warn "linux-jarvisos build failed"
+            else
+                warn "makepkg not found — cannot build linux-jarvisos on this system"
+            fi
+        fi
+
+        # 4. Not available — print instructions and continue
+        warn "linux-jarvisos not installed. JARVIS kernel features (/dev/jarvis, policy engine,"
+        warn "sysmon sysfs) will be unavailable. The JARVIS AI stack runs on the stock kernel."
+        warn "To install linux-jarvisos later:"
+        warn "  git clone --recursive https://github.com/JarvisOSLinux/linux-jarvisos linux-jarvisos"
+        warn "  bash scripts/03b-build-kernel.sh --host-install"
+        return 0
+    }
+    _install_linux_jarvisos
+
+    # Update GRUB/systemd-boot to add linux-jarvisos entry if kernel installed
+    if pacman -Q linux-jarvisos >/dev/null 2>&1; then
+        if [ -f /boot/vmlinuz-linux-jarvisos ]; then
+            if [ -d /sys/firmware/efi/efivars ] && [ -d /boot/loader/entries ]; then
+                # systemd-boot: add entry if not already present
+                local _entry="/boot/loader/entries/jarvisos.conf"
+                if [ ! -f "${_entry}" ]; then
+                    local _root_partuuid; _root_partuuid=$(blkid -s PARTUUID -o value "$(findmnt -n -o SOURCE /)" 2>/dev/null || true)
+                    if [ -n "${_root_partuuid}" ]; then
+                        cat > "${_entry}" << BOOTEOF
+title   JARVIS OS (linux-jarvisos)
+linux   /vmlinuz-linux-jarvisos
+initrd  /initramfs-linux-jarvisos.img
+options root=PARTUUID=${_root_partuuid} rw
+BOOTEOF
+                        ok "systemd-boot entry added for linux-jarvisos"
+                    fi
+                fi
+            elif command -v grub-mkconfig >/dev/null 2>&1; then
+                # GRUB: os-prober + grub-mkconfig picks up all installed kernels
+                grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null \
+                    && ok "GRUB updated to include linux-jarvisos entry" \
+                    || warn "grub-mkconfig failed — update GRUB manually: grub-mkconfig -o /boot/grub/grub.cfg"
+            fi
+            # Regenerate initramfs for linux-jarvisos
+            if [ -f /etc/mkinitcpio.d/linux-jarvisos.preset ]; then
+                mkinitcpio -p linux-jarvisos \
+                    && ok "linux-jarvisos initramfs regenerated" \
+                    || warn "mkinitcpio failed for linux-jarvisos"
+            fi
+        fi
+    fi
 
     # ── KDE Plasma Wayland ───────────────────────────────────────────────
     info "Installing KDE Plasma Wayland..."
@@ -1254,31 +1412,18 @@ ID=jarvisos
 ID_LIKE=arch
 BUILD_ID=rolling
 ANSI_COLOR="38;2;23;147;209"
-HOME_URL="https://github.com/YOUR_ORG/jarvisos"
-DOCUMENTATION_URL="https://github.com/YOUR_ORG/jarvisos/wiki"
+HOME_URL="https://github.com/JarvisOSLinux/jarvisos"
+DOCUMENTATION_URL="https://github.com/JarvisOSLinux/jarvisos/wiki"
 LOGO=distributor-logo-jarvisos
 EOF
     ok "JARVIS OS branding applied"
 
-    # ── Ollama ────────────────────────────────────────────────────────────
+    # ── Ollama (GPU-aware install) ─────────────────────────────────────────
     info "Installing Ollama..."
     if command -v ollama >/dev/null 2>&1; then
         ok "Ollama already installed ($(ollama --version 2>/dev/null || echo unknown))"
     else
-        if curl -fsSL https://ollama.com/install.sh | OLLAMA_NO_SYSTEM_SERVICE=1 sh 2>/dev/null; then
-            ok "Ollama installed"
-        else
-            warn "Ollama install.sh failed — trying direct binary download..."
-            local _arch; _arch=$(uname -m)
-            local _url="https://ollama.com/download/ollama-linux-amd64"
-            [ "${_arch}" = "aarch64" ] && _url="https://ollama.com/download/ollama-linux-arm64"
-            if curl -fsSL -o /usr/local/bin/ollama "${_url}"; then
-                chmod +x /usr/local/bin/ollama
-                ok "Ollama binary installed"
-            else
-                warn "Ollama download failed — install manually: curl -fsSL https://ollama.com/install.sh | sh"
-            fi
-        fi
+        _install_ollama_gpu
     fi
 
     # Ollama systemd service
@@ -1296,7 +1441,7 @@ Restart=always
 RestartSec=3
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="HOME=/usr/share/ollama"
-Environment="OLLAMA_HOST=0.0.0.0"
+Environment="OLLAMA_HOST=127.0.0.1"
 
 [Install]
 WantedBy=default.target
@@ -1502,7 +1647,7 @@ Environment=JARVIS_DATA_DIR=/var/lib/jarvis
 Environment=JARVIS_INPUT_SOCKET=/run/jarvis/input.sock
 Environment=JARVIS_LOG_DIR=/var/log/jarvis
 Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
-Environment=PYTHONPATH=/usr/lib/jarvis
+Environment=PYTHONPATH=/usr/lib
 Environment=OLLAMA_HOST=127.0.0.1:11434
 Environment=XDG_RUNTIME_DIR=/run/user/0
 StandardOutput=journal
@@ -1517,8 +1662,7 @@ JARVISSVC
 [Unit]
 Description=JARVIS First-Boot Setup (pull LLM model)
 After=network-online.target ollama.service
-Wants=network-online.target
-Requires=ollama.service
+Wants=network-online.target ollama.service
 ConditionPathExists=!/var/lib/jarvis/.setup-done
 
 [Service]
@@ -1692,11 +1836,65 @@ EOF
     echo ""
 }
 
+# ── Uninstall JARVIS OS components from an overlay-installed system ────────
+uninstall_mode() {
+    need_root
+    detect_arch_based
+
+    dialog --clear --backtitle "JARVIS OS Uninstaller" \
+           --title "Remove JARVIS OS Components" \
+           --yesno "Remove JARVIS OS components from this system?\n\nThis will:\n  • Stop and disable jarvis, jarvis-setup, dmcp, ollama services\n  • Remove /usr/lib/jarvis, /var/lib/jarvis, /var/log/jarvis, /etc/jarvis\n  • Remove /usr/bin/jarvis, /usr/bin/jarvis-daemon, /usr/bin/dmcp, /usr/bin/dispatch\n  • Remove sudoers and polkit rules\n  • Remove systemd service units\n  • Remove SDDM config (if JarvisOS-managed)\n  • Remove XDG autostart entries\n\nDoes NOT remove: KDE Plasma, PipeWire, NetworkManager, linux-jarvisos kernel.\nTo remove linux-jarvisos: sudo pacman -R linux-jarvisos linux-jarvisos-headers\n\nProceed?" 28 70 \
+        || { clear; echo "Aborted."; exit 0; }
+
+    clear
+    echo ""
+    echo -e "${BOLD}${CYAN}  Removing JARVIS OS Components...${NC}"
+    echo ""
+
+    systemctl stop  jarvis.service jarvis-setup.service dmcp.service ollama.service 2>/dev/null || true
+    systemctl disable jarvis.service jarvis-setup.service dmcp.service ollama.service 2>/dev/null || true
+
+    rm -rf /usr/lib/jarvis /var/lib/jarvis /var/log/jarvis /etc/jarvis
+    rm -f /usr/bin/jarvis /usr/bin/jarvis-daemon /usr/bin/dmcp /usr/bin/dispatch
+    rm -f /usr/local/bin/jarvis-first-boot.sh /usr/local/bin/mount-bootmnt.sh
+    rm -f /etc/sudoers.d/10-jarvis
+    rm -f /etc/polkit-1/rules.d/49-jarvis.rules
+    rm -f /usr/lib/systemd/system/jarvis.service \
+          /usr/lib/systemd/system/jarvis-setup.service \
+          /usr/lib/systemd/system/dmcp.service \
+          /usr/lib/systemd/system/ollama.service
+    rm -f /etc/xdg/autostart/jarvis.desktop /etc/xdg/autostart/ollama.desktop
+    rm -f /usr/share/applications/jarvis.desktop
+    rm -f /etc/NetworkManager/conf.d/wifi-backend.conf 2>/dev/null || true
+
+    # Remove jarvis user/group (don't remove home since /var/lib/jarvis already deleted)
+    userdel jarvis 2>/dev/null || true
+    groupdel jarvis 2>/dev/null || true
+
+    systemctl daemon-reload
+
+    echo ""
+    echo -e "${GREEN}JARVIS OS components removed.${NC}"
+    echo ""
+    echo -e "  To also remove linux-jarvisos kernel:"
+    echo -e "    ${BOLD}sudo pacman -R linux-jarvisos linux-jarvisos-headers${NC}"
+    echo -e "  Then update your bootloader:"
+    echo -e "    ${BOLD}sudo grub-mkconfig -o /boot/grub/grub.cfg${NC}  (GRUB)"
+    echo -e "    ${BOLD}sudo bootctl update${NC}  (systemd-boot)"
+    echo ""
+}
+
 # ── Main ───────────────────────────────────────────────────────────────────
 main() {
     # Overlay-install mode: add JarvisOS components to existing Arch system
     if [[ "${1:-}" == "--install-packages" || "${1:-}" == "--overlay" ]]; then
         install_packages_mode
+        exit 0
+    fi
+
+    # Uninstall mode: remove JarvisOS components from overlay-installed system
+    if [[ "${1:-}" == "--uninstall" || "${1:-}" == "--remove" ]]; then
+        uninstall_mode
         exit 0
     fi
 

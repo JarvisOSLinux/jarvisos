@@ -59,6 +59,17 @@ if [ ! -s "${SQUASHFS_ROOTFS}/etc/resolv.conf" ]; then
         | sudo tee "${SQUASHFS_ROOTFS}/etc/resolv.conf" > /dev/null
 fi
 
+# ── Mirror list: prepend geo-aware CDN mirrors ───────────────────────────────
+# The base Arch ISO mirrorlist may have stale or geographically distant servers.
+# Prepend Arch's CDN geo-mirror so package downloads are fast regardless of region.
+echo -e "${BLUE}Setting fast mirrors in chroot...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/etc/pacman.d/mirrorlist" > /dev/null << 'MIRROREOF'
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+MIRROREOF
+echo -e "${GREEN}✓ Mirrors set (Arch CDN + Rackspace + kernel.org)${NC}"
+
 # ── Bind mount + cleanup trap ─────────────────────────────────────────────────
 echo -e "${BLUE}Bind mounting rootfs...${NC}"
 sudo mount --bind "${SQUASHFS_ROOTFS}" "${SQUASHFS_ROOTFS}" || {
@@ -135,7 +146,7 @@ echo -e "${BLUE}Installing base utilities...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     sudo less nano vim wget curl git openssh man-db man-pages \
     unzip zip p7zip rsync tzdata \
-    bash-completion which lsof strace htop neofetch \
+    bash-completion which lsof strace htop fastfetch \
     || echo -e "${YELLOW}Warning: Some base packages failed${NC}"
 
 # Kernel
@@ -283,8 +294,8 @@ ID=jarvisos
 ID_LIKE=arch
 BUILD_ID=rolling
 ANSI_COLOR="38;2;23;147;209"
-HOME_URL="https://github.com/YOUR_ORG/jarvisos"
-DOCUMENTATION_URL="https://github.com/YOUR_ORG/jarvisos/wiki"
+HOME_URL="https://github.com/JarvisOSLinux/jarvisos"
+DOCUMENTATION_URL="https://github.com/JarvisOSLinux/jarvisos/wiki"
 LOGO=distributor-logo-jarvisos
 EOF
 

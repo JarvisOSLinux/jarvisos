@@ -77,8 +77,10 @@ sudo mount --bind "${SQUASHFS_ROOTFS}" "${SQUASHFS_ROOTFS}" || {
 # Function to cleanup on exit
 cleanup() {
     echo -e "${BLUE}Cleaning up...${NC}"
-    # Unmount bind mount
-    sudo umount "${SQUASHFS_ROOTFS}" 2>/dev/null || true
+    for _mp in dev/pts dev/shm dev proc sys run tmp; do
+        sudo umount -l "${SQUASHFS_ROOTFS}/${_mp}" 2>/dev/null || true
+    done
+    sudo umount -l "${SQUASHFS_ROOTFS}" 2>/dev/null || true
 }
 
 # Trap to ensure cleanup on exit
@@ -153,7 +155,7 @@ Restart=always
 RestartSec=3
 Environment=\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
 Environment=\"HOME=/usr/share/ollama\"
-Environment=\"OLLAMA_HOST=0.0.0.0\"
+Environment=\"OLLAMA_HOST=127.0.0.1\"
 
 [Install]
 WantedBy=default.target
@@ -604,7 +606,7 @@ Environment=JARVIS_DATA_DIR=/var/lib/jarvis
 Environment=JARVIS_INPUT_SOCKET=/run/jarvis/input.sock
 Environment=JARVIS_LOG_DIR=/var/log/jarvis
 Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
-Environment=PYTHONPATH=/usr/lib/jarvis
+Environment=PYTHONPATH=/usr/lib
 Environment=OLLAMA_HOST=127.0.0.1:11434
 Environment=XDG_RUNTIME_DIR=/run/user/0
 
@@ -718,59 +720,102 @@ echo -e "${BLUE}Creating first-boot service...${NC}"
 # First-boot script
 sudo tee "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-first-boot.sh" > /dev/null << 'FIRSTBOOT'
 #!/bin/bash
-# JARVIS first-boot setup — pulls the default LLM model via Ollama
+# JARVIS first-boot setup: GPU detection, Ollama GPU reinstall, LLM model pull.
 # Runs once after installation, then disables itself.
+#
+# GPU note: the ISO bakes a CPU-only Ollama binary because the build runs in a
+# chroot where no GPU is visible.  This script runs on the real installed system
+# and replaces the binary with the correct GPU variant before pulling the model.
 
 set -e
 
 MARKER="/var/lib/jarvis/.setup-done"
 LOG="/var/log/jarvis/first-boot.log"
 mkdir -p /var/log/jarvis
-
 exec > >(tee -a "$LOG") 2>&1
 echo "=== JARVIS first-boot $(date) ==="
 
-if [ -f "$MARKER" ]; then
-    echo "Setup already completed, exiting."
-    exit 0
-fi
+[ -f "$MARKER" ] && echo "Setup already completed." && exit 0
 
-# Read model from .env
+# ── GPU detection ─────────────────────────────────────────────────────────────
+_detect_gpu() {
+    # NVIDIA: check PCI bus or loaded kernel module
+    if lspci 2>/dev/null | grep -qi 'nvidia' || \
+       lsmod 2>/dev/null | grep -q '^nvidia '; then
+        echo "nvidia"; return
+    fi
+    # AMD discrete GPU: amdgpu module loaded (APUs show radeon, not amdgpu)
+    if lsmod 2>/dev/null | grep -q '^amdgpu '; then
+        echo "amd"; return
+    fi
+    # Fallback PCI scan for AMD/Radeon
+    if lspci 2>/dev/null | grep -qi 'radeon\|amdgpu'; then
+        echo "amd"; return
+    fi
+    echo "cpu"
+}
+
+# ── Reinstall Ollama with GPU support ────────────────────────────────────────
+GPU=$(_detect_gpu)
+echo "GPU detected: ${GPU}"
+_ARCH=$(uname -m)
+
+case "${GPU}" in
+    nvidia)
+        echo "Installing Ollama with NVIDIA CUDA support..."
+        curl -fsSL https://ollama.com/install.sh | sh \
+            || echo "Warning: CUDA install failed — Ollama stays in CPU mode"
+        ;;
+    amd)
+        echo "Installing Ollama with AMD ROCm support..."
+        if [ "${_ARCH}" = "x86_64" ]; then
+            curl -fsSL -o /usr/local/bin/ollama \
+                    https://ollama.com/download/ollama-linux-amd64-rocm \
+                && chmod +x /usr/local/bin/ollama \
+                && echo "✓ Ollama ROCm binary installed" \
+                || { echo "Warning: ROCm download failed — falling back to install.sh";
+                     curl -fsSL https://ollama.com/install.sh | sh || true; }
+        else
+            curl -fsSL https://ollama.com/install.sh | sh || true
+        fi
+        # Grant ollama service user access to GPU render/DRI devices
+        usermod -aG render ollama 2>/dev/null || true
+        usermod -aG video  ollama 2>/dev/null || true
+        ;;
+    cpu)
+        echo "No discrete GPU detected — Ollama running in CPU mode"
+        ;;
+esac
+
+# Restart Ollama so the new binary (or groups) take effect
+systemctl restart ollama.service 2>/dev/null || true
+sleep 3
+
+# ── Read model from .env ──────────────────────────────────────────────────────
 MODEL="qwen3:4b"
 if [ -f /usr/lib/jarvis/.env ]; then
     ENV_MODEL=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2-)
     [ -n "$ENV_MODEL" ] && MODEL="$ENV_MODEL"
 fi
 
-# Wait for Ollama to be ready (it's started as a dependency)
+# ── Wait for Ollama ───────────────────────────────────────────────────────────
 echo "Waiting for Ollama..."
 for i in $(seq 1 60); do
-    if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-        echo "Ollama is ready."
-        break
-    fi
+    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && \
+        echo "Ollama is ready." && break
     sleep 2
 done
 
-# Check if model was already baked into the ISO (step 4b pre-pull)
+# ── Pull LLM model ────────────────────────────────────────────────────────────
 if ollama list 2>/dev/null | grep -q "${MODEL%%:*}"; then
-    echo "Model ${MODEL} already present (baked into ISO). Skipping download."
+    echo "Model ${MODEL} already present. Skipping download."
 else
-    # Model not present — pull it now (e.g. user changed LLM_MODEL after install)
     echo "Pulling model: ${MODEL} ..."
-    if ollama pull "$MODEL"; then
-        echo "Model pulled successfully."
-    else
-        echo "Warning: Failed to pull model. Will retry on next boot."
-        exit 1
-    fi
+    ollama pull "$MODEL" || { echo "Warning: model pull failed — will retry on next boot."; exit 1; }
 fi
 
-# Mark setup as done
 touch "$MARKER"
 echo "First-boot setup complete."
-
-# Disable ourselves
 systemctl disable jarvis-setup.service 2>/dev/null || true
 FIRSTBOOT
 
