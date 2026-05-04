@@ -184,8 +184,11 @@ else
 fi
 
 # ── Kernel version info ───────────────────────────────────────────────────────
-KERNELRELEASE=$(make -s kernelrelease LOCALVERSION="${LOCALVERSION}")
-echo -e "${BLUE}Kernel release: ${KERNELRELEASE}${NC}"
+# Parse base version from Makefile directly — make kernelrelease requires
+# include/config/auto.conf which doesn't exist until after prepare() runs.
+_KVER=$(awk '/^VERSION =/{v=$3}/^PATCHLEVEL =/{p=$3}/^SUBLEVEL =/{s=$3}END{print v"."p"."s}' \
+    "${KERNEL_SRC}/Makefile")
+echo -e "${BLUE}Kernel version: ${_KVER}${LOCALVERSION} (full release string resolved post-build)${NC}"
 echo ""
 
 # ── Determine how to invoke makepkg (refuses to run as root) ─────────────────
@@ -247,6 +250,10 @@ else
     echo ""
     echo -e "${GREEN}✓ Packages built successfully${NC}"
 fi
+
+# Kernel is now configured — resolve the full release string.
+KERNELRELEASE=$(cd "${KERNEL_SRC}" && make -s kernelrelease LOCALVERSION="${LOCALVERSION}" 2>/dev/null \
+    || echo "${_KVER}${LOCALVERSION}")
 
 # Locate the produced packages
 PKG_LINUX=$(ls -t "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
