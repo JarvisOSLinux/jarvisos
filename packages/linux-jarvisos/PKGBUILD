@@ -181,6 +181,7 @@ prepare() {
     # CONFIG_MISC_DEVICES is the direct dependency of CONFIG_JARVIS — it must be
     # enabled first or olddefconfig will discard CONFIG_JARVIS.
     echo "  -> Enforcing JARVIS driver config..."
+    scripts/config --disable CONFIG_LOCALVERSION_AUTO
     scripts/config --enable CONFIG_SYSFS
     scripts/config --enable CONFIG_KEYS
     scripts/config --enable CONFIG_THERMAL
