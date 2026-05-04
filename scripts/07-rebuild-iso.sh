@@ -8,6 +8,9 @@ set -eo pipefail
 source build.config
 source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
+require_tool_simple "xorriso"
+require_tool "mkfs.fat" "dosfstools" "dosfstools" "dosfstools" "dosfstools"
+
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
     echo "Error: SCRIPTS_DIR not set in build.config" >&2

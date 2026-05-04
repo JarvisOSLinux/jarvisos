@@ -154,6 +154,33 @@ ensure_host_tool() {
 }
 
 # ============================================================================
+# require_tool — like ensure_host_tool but exits on failure (fatal check)
+# Usage: require_tool <binary> <pkg_arch> <pkg_fedora> <pkg_debian> [<pkg_opensuse>]
+# ============================================================================
+
+require_tool() {
+    local binary="${1}"
+    local pkg_arch="${2}"
+    local pkg_fedora="${3}"
+    local pkg_debian="${4}"
+    local pkg_opensuse="${5:-${pkg_fedora}}"
+
+    if ensure_host_tool "${binary}" "${pkg_arch}" "${pkg_fedora}" "${pkg_debian}" "${pkg_opensuse}"; then
+        return 0
+    fi
+    echo "Error: Required tool '${binary}' unavailable and could not be installed." >&2
+    exit 1
+}
+
+# Convenience wrapper for tools with identical package name across all distros.
+# Usage: require_tool_simple <binary> [<package>]
+require_tool_simple() {
+    local binary="${1}"
+    local pkg="${2:-${1}}"
+    require_tool "${binary}" "${pkg}" "${pkg}" "${pkg}" "${pkg}"
+}
+
+# ============================================================================
 # Chroot Tool Check with Distro-Aware Error Message
 # ============================================================================
 

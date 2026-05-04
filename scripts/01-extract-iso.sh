@@ -9,6 +9,8 @@ set -eo pipefail
 source build.config
 source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
+require_tool "7z" "p7zip" "p7zip p7zip-plugins" "p7zip-full" "p7zip"
+
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
     echo "Error: SCRIPTS_DIR not set in build.config" >&2
