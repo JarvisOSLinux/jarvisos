@@ -103,6 +103,11 @@ prepare() {
     scripts/config --enable CONFIG_SCSI_MOD
 
     # Filesystems (needed for the installed system + live boot)
+    # iso9660 =y (built-in) so the archiso hook can mount the ISO device without
+    # needing to load a module first; also enables JOLIET/ZISOFS extensions.
+    scripts/config --enable CONFIG_ISO9660_FS
+    scripts/config --enable CONFIG_JOLIET
+    scripts/config --enable CONFIG_ZISOFS
     scripts/config --enable CONFIG_EXT4_FS
     scripts/config --enable CONFIG_VFAT_FS
     scripts/config --enable CONFIG_BTRFS_FS
@@ -181,7 +186,7 @@ prepare() {
     # CONFIG_MISC_DEVICES is the direct dependency of CONFIG_JARVIS — it must be
     # enabled first or olddefconfig will discard CONFIG_JARVIS.
     echo "  -> Enforcing JARVIS driver config..."
-    scripts/config --enable CONFIG_MISC_DEVICES
+    scripts/config --disable CONFIG_LOCALVERSION_AUTO
     scripts/config --enable CONFIG_SYSFS
     scripts/config --enable CONFIG_KEYS
     scripts/config --enable CONFIG_THERMAL
@@ -210,7 +215,7 @@ prepare() {
     if ! grep -q "^CONFIG_JARVIS=m" "$_ksrc/.config"; then
         echo "  ERROR: CONFIG_JARVIS=m is missing from the final .config!" >&2
         echo "  Dependency chain:" >&2
-        grep "CONFIG_MISC_DEVICES\|CONFIG_SYSFS\|CONFIG_JARVIS" "$_ksrc/.config" >&2
+        grep "CONFIG_SYSFS\|CONFIG_JARVIS" "$_ksrc/.config" >&2
         return 1
     fi
     echo "  -> CONFIG_JARVIS=m confirmed in final .config"

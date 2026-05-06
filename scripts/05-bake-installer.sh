@@ -183,7 +183,7 @@ sudo tee "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service" > /dev
 Description=JARVIS OS First-Boot Setup (Ollama model pull)
 After=network-online.target ollama.service
 Wants=network-online.target ollama.service
-ConditionPathExists=!/var/lib/jarvis/.setup-complete
+ConditionPathExists=!/var/lib/jarvis/.setup-done
 
 [Service]
 Type=oneshot
@@ -191,7 +191,7 @@ User=root
 WorkingDirectory=/var/lib/jarvis
 ExecStartPre=/bin/sleep 5
 ExecStart=/usr/local/bin/jarvis-first-boot.sh
-ExecStartPost=/bin/touch /var/lib/jarvis/.setup-complete
+ExecStartPost=/bin/touch /var/lib/jarvis/.setup-done
 RemainAfterExit=yes
 TimeoutStartSec=600
 StandardOutput=journal

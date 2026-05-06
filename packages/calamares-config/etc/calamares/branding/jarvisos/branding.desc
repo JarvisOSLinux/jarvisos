@@ -11,7 +11,7 @@ strings:
   versionedName: "JARVIS OS 2025.1"
   shortVersionedName: "JARVIS 2025.1"
   bootloaderEntryName: "JARVIS"
-  productUrl: "https://github.com/ChatGPT-based-AI/JARVIS-OS"
+  productUrl: "https://github.com/JarvisOSLinux/jarvisos"
 
 images:
   productLogo: ""

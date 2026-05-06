@@ -59,6 +59,17 @@ if [ ! -s "${SQUASHFS_ROOTFS}/etc/resolv.conf" ]; then
         | sudo tee "${SQUASHFS_ROOTFS}/etc/resolv.conf" > /dev/null
 fi
 
+# ── Mirror list: prepend geo-aware CDN mirrors ───────────────────────────────
+# The base Arch ISO mirrorlist may have stale or geographically distant servers.
+# Prepend Arch's CDN geo-mirror so package downloads are fast regardless of region.
+echo -e "${BLUE}Setting fast mirrors in chroot...${NC}"
+sudo tee "${SQUASHFS_ROOTFS}/etc/pacman.d/mirrorlist" > /dev/null << 'MIRROREOF'
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+MIRROREOF
+echo -e "${GREEN}✓ Mirrors set (Arch CDN + Rackspace + kernel.org)${NC}"
+
 # ── Bind mount + cleanup trap ─────────────────────────────────────────────────
 echo -e "${BLUE}Bind mounting rootfs...${NC}"
 sudo mount --bind "${SQUASHFS_ROOTFS}" "${SQUASHFS_ROOTFS}" || {
@@ -109,18 +120,18 @@ echo -e "${BLUE}Configuring mkinitcpio.conf for live-boot...${NC}"
 MKINIT_CONF="${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf"
 if [ -f "${MKINIT_CONF}" ]; then
     sudo sed -i \
-        's/^MODULES=.*/MODULES=(squashfs overlay loop xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd)/' \
+        's/^MODULES=.*/MODULES=(squashfs overlay loop iso9660 xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd usb_storage)/' \
         "${MKINIT_CONF}"
     sudo sed -i \
-        's/^HOOKS=.*/HOOKS=(base udev archiso memdisk modconf kms keyboard keymap)/' \
+        's/^HOOKS=.*/HOOKS=(base udev microcode modconf kms block memdisk archiso filesystems keyboard keymap)/' \
         "${MKINIT_CONF}"
-    echo -e "${GREEN}✓ mkinitcpio.conf set (archiso/memdisk HOOKS)${NC}"
+    echo -e "${GREEN}✓ mkinitcpio.conf set (block+archiso+filesystems HOOKS)${NC}"
 else
     sudo tee "${MKINIT_CONF}" > /dev/null << 'MKINITEOF'
-MODULES=(squashfs overlay loop xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd)
+MODULES=(squashfs overlay loop iso9660 xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd usb_storage)
 BINARIES=()
 FILES=()
-HOOKS=(base udev archiso memdisk modconf kms keyboard keymap)
+HOOKS=(base udev microcode modconf kms block memdisk archiso filesystems keyboard keymap)
 MKINITEOF
     echo -e "${GREEN}✓ mkinitcpio.conf created${NC}"
 fi
@@ -135,7 +146,7 @@ echo -e "${BLUE}Installing base utilities...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" pacman -S --noconfirm --needed \
     sudo less nano vim wget curl git openssh man-db man-pages \
     unzip zip p7zip rsync tzdata \
-    bash-completion which lsof strace htop neofetch \
+    bash-completion which lsof strace htop fastfetch \
     || echo -e "${YELLOW}Warning: Some base packages failed${NC}"
 
 # Kernel
@@ -283,8 +294,8 @@ ID=jarvisos
 ID_LIKE=arch
 BUILD_ID=rolling
 ANSI_COLOR="38;2;23;147;209"
-HOME_URL="https://github.com/YOUR_ORG/jarvisos"
-DOCUMENTATION_URL="https://github.com/YOUR_ORG/jarvisos/wiki"
+HOME_URL="https://github.com/JarvisOSLinux/jarvisos"
+DOCUMENTATION_URL="https://github.com/JarvisOSLinux/jarvisos/wiki"
 LOGO=distributor-logo-jarvisos
 EOF
 

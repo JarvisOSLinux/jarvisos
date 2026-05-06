@@ -8,6 +8,8 @@ set -eo pipefail
 source build.config
 source "$(dirname "${BASH_SOURCE[0]}")/build-utils.sh"
 
+require_tool "mksquashfs" "squashfs-tools" "squashfs-tools" "squashfs-tools" "squashfs"
+
 # Validate required variables
 if [ -z "${SCRIPTS_DIR}" ]; then
     echo "Error: SCRIPTS_DIR not set in build.config" >&2
