@@ -120,18 +120,18 @@ echo -e "${BLUE}Configuring mkinitcpio.conf for live-boot...${NC}"
 MKINIT_CONF="${SQUASHFS_ROOTFS}/etc/mkinitcpio.conf"
 if [ -f "${MKINIT_CONF}" ]; then
     sudo sed -i \
-        's/^MODULES=.*/MODULES=(squashfs overlay loop xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd)/' \
+        's/^MODULES=.*/MODULES=(squashfs overlay loop iso9660 xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd usb_storage)/' \
         "${MKINIT_CONF}"
     sudo sed -i \
-        's/^HOOKS=.*/HOOKS=(base udev archiso memdisk modconf kms keyboard keymap)/' \
+        's/^HOOKS=.*/HOOKS=(base udev microcode modconf kms block memdisk archiso filesystems keyboard keymap)/' \
         "${MKINIT_CONF}"
-    echo -e "${GREEN}✓ mkinitcpio.conf set (archiso/memdisk HOOKS)${NC}"
+    echo -e "${GREEN}✓ mkinitcpio.conf set (block+archiso+filesystems HOOKS)${NC}"
 else
     sudo tee "${MKINIT_CONF}" > /dev/null << 'MKINITEOF'
-MODULES=(squashfs overlay loop xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd)
+MODULES=(squashfs overlay loop iso9660 xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd usb_storage)
 BINARIES=()
 FILES=()
-HOOKS=(base udev archiso memdisk modconf kms keyboard keymap)
+HOOKS=(base udev microcode modconf kms block memdisk archiso filesystems keyboard keymap)
 MKINITEOF
     echo -e "${GREEN}✓ mkinitcpio.conf created${NC}"
 fi

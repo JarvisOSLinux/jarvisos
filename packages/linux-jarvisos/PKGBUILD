@@ -103,6 +103,11 @@ prepare() {
     scripts/config --enable CONFIG_SCSI_MOD
 
     # Filesystems (needed for the installed system + live boot)
+    # iso9660 =y (built-in) so the archiso hook can mount the ISO device without
+    # needing to load a module first; also enables JOLIET/ZISOFS extensions.
+    scripts/config --enable CONFIG_ISO9660_FS
+    scripts/config --enable CONFIG_JOLIET
+    scripts/config --enable CONFIG_ZISOFS
     scripts/config --enable CONFIG_EXT4_FS
     scripts/config --enable CONFIG_VFAT_FS
     scripts/config --enable CONFIG_BTRFS_FS

@@ -570,7 +570,7 @@ fix_efi_boot_structure() {
                 # Ensure archisolabel uses our volume label
                 sudo sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${ENTRY_FILE}" 2>/dev/null || true
                 # Fix options line to use archisolabel
-                sudo sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID}|g" "${ENTRY_FILE}" 2>/dev/null || true
+                sudo sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID} rootdelay=30|g" "${ENTRY_FILE}" 2>/dev/null || true
             fi
         done
         echo -e "${GREEN}✓ Updated boot entry volume IDs${NC}"
@@ -859,7 +859,7 @@ if [ "${CACHYOS_FALLBACK_IN_ISO}" = true ]; then
 title    JarvisOS (linux-cachyos fallback)
 linux    /arch/boot/x86_64/vmlinuz-linux-cachyos
 initrd   /arch/boot/x86_64/initramfs-linux-cachyos.img
-options  archisobasedir=arch archisolabel=${JARVISOS_VOLID}
+options  archisobasedir=arch archisolabel=${JARVISOS_VOLID} rootdelay=30
 CACHYOS_ENTRY_EOF
         echo -e "${GREEN}✓ Created linux-cachyos fallback systemd-boot entry${NC}"
     fi
@@ -873,7 +873,7 @@ LABEL cachyos-fallback
   MENU LABEL JarvisOS (linux-cachyos fallback)
   LINUX    /arch/boot/x86_64/vmlinuz-linux-cachyos
   INITRD   /arch/boot/x86_64/initramfs-linux-cachyos.img
-  APPEND   archisobasedir=arch archisolabel=${JARVISOS_VOLID}
+  APPEND   archisobasedir=arch archisolabel=${JARVISOS_VOLID} rootdelay=30
 SYSLINUX_CACHYOS_EOF
         echo -e "${GREEN}✓ Created linux-cachyos fallback syslinux entry${NC}"
     fi
@@ -897,6 +897,8 @@ for cfg in boot/syslinux/archiso_sys-linux.cfg \
         sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
         # Normalise any existing archisolabel to our volume ID
         sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${cfg}"
+        # Add rootdelay=30 if not already present (ensures poll_device waits 30s, not the 10s default)
+        sed -i '/archisolabel=/{/rootdelay/!s/$/ rootdelay=30/}' "${cfg}"
         echo -e "${GREEN}✓ Fixed $(basename "${cfg}")${NC}"
     fi
 done
@@ -916,7 +918,7 @@ if [ -d "loader/entries" ]; then
             sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${entry}"
             sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${entry}"
             # Fix options line to use archisolabel
-            sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID}|g" "${entry}"
+            sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID} rootdelay=30|g" "${entry}"
             echo -e "${GREEN}✓ Fixed $(basename "${entry}")${NC}"
         fi
     done
@@ -948,7 +950,7 @@ if [ -f "${EFI_IMG_PATH}" ]; then
                     sudo sed -i "s/archisosearchuuid=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${entry}"
                     sudo sed -i "s/archisolabel=[^ ]*/archisolabel=${JARVISOS_VOLID}/g" "${entry}"
                     # Fix options line to use archisolabel
-                    sudo sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID}|g" "${entry}"
+                    sudo sed -i "s|^options .*|options archisobasedir=arch archisolabel=${JARVISOS_VOLID} rootdelay=30|g" "${entry}"
                     # Rebrand CachyOS inside efiboot.img
                     sudo sed -i 's/CachyOS Linux install medium/JarvisOS/g' "${entry}" 2>/dev/null || true
                     sudo sed -i 's/CachyOS Linux/JarvisOS/g'                "${entry}" 2>/dev/null || true
@@ -963,7 +965,7 @@ if [ -f "${EFI_IMG_PATH}" ]; then
 title    JarvisOS (linux-cachyos fallback)
 linux    /EFI/archiso/boot/x86_64/vmlinuz-linux-cachyos
 initrd   /EFI/archiso/boot/x86_64/initramfs-linux-cachyos.img
-options  archisobasedir=arch archisolabel=${JARVISOS_VOLID}
+options  archisobasedir=arch archisolabel=${JARVISOS_VOLID} rootdelay=30
 CACHYOS_EFI_EOF
                 echo -e "${GREEN}✓ Created linux-cachyos fallback entry in efiboot.img${NC}"
             fi
