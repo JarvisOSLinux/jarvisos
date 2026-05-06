@@ -45,14 +45,14 @@ need_root() {
 
 check_deps() {
     local missing=()
-    for cmd in dialog parted mkfs.fat arch-chroot genfstab rsync blkid lsblk sgdisk wipefs; do
+    for cmd in dialog parted mkfs.fat arch-chroot genfstab pacstrap blkid lsblk sgdisk wipefs; do
         command -v "${cmd}" >/dev/null 2>&1 || missing+=("${cmd}")
     done
     if [ ${#missing[@]} -gt 0 ]; then
         clear
         echo "Installing missing tools: ${missing[*]}"
         pacman -S --noconfirm --needed arch-install-scripts parted dosfstools \
-            dialog rsync gptfdisk 2>/dev/null || true
+            dialog gptfdisk 2>/dev/null || true
     fi
 }
 
@@ -117,17 +117,19 @@ JARVIS OS — AI-Powered Arch Linux\n\
 \n\
 This installer will:\n\
   1. Partition your chosen disk\n\
-  2. Install the JARVIS OS system\n\
-  3. Configure bootloader, user, and services\n\
-  4. Set up the JARVIS AI assistant (model downloads on first boot)\n\
+  2. Bootstrap a base Arch system (pacstrap)\n\
+  3. Install KDE Plasma, Ollama, and the JARVIS AI stack\n\
+  4. Configure bootloader, user, and services\n\
+  5. Set up the JARVIS AI assistant (model downloads on first boot)\n\
 \n\
 Boot mode: $(${IS_EFI} && echo 'UEFI' || echo 'BIOS (Legacy)')\n\
+Internet connection required.\n\
 \n\
 WARNING: All data on the target disk will be erased.\n\
 Ensure you have backups before continuing.\n\
 \n\
 Press OK to begin." \
-           16 68 || { clear; echo "Aborted."; exit 0; }
+           18 68 || { clear; echo "Aborted."; exit 0; }
 }
 
 # ── Step 2: Disk selection ─────────────────────────────────────────────────
@@ -730,37 +732,9 @@ format_root() {
     esac
 }
 
-# ── Mount live medium ──────────────────────────────────────────────────────
-ensure_bootmnt() {
-    local BOOTMNT="/run/archiso/bootmnt"
-    if mountpoint -q "${BOOTMNT}" 2>/dev/null; then
-        return 0
-    fi
-    # Try to find and mount the live medium
-    local LIVE_DEV
-    LIVE_DEV=$(blkid -o device -t TYPE="iso9660" 2>/dev/null | head -1 || true)
-    if [ -z "${LIVE_DEV}" ]; then
-        LIVE_DEV=$(blkid -o device -t TYPE="squashfs" 2>/dev/null | head -1 || true)
-    fi
-    if [ -n "${LIVE_DEV}" ]; then
-        mkdir -p "${BOOTMNT}"
-        mount -r "${LIVE_DEV}" "${BOOTMNT}" 2>/dev/null || true
-    fi
-}
 
 # ── Install system ─────────────────────────────────────────────────────────
 install_system() {
-    local BOOTMNT="/run/archiso/bootmnt"
-    local SQUASH_MNT="/mnt/jarvis-squash"
-    local SFS_SRC=""
-
-    ensure_bootmnt
-
-    # Find squashfs on the live medium
-    if mountpoint -q "${BOOTMNT}" 2>/dev/null; then
-        SFS_SRC=$(find "${BOOTMNT}" -name "airootfs.sfs" 2>/dev/null | head -1 || true)
-    fi
-
     clear
     echo ""
     echo -e "${BOLD}${CYAN}  ╔══════════════════════════════════════════════╗${NC}"
@@ -768,59 +742,56 @@ install_system() {
     echo -e "${BOLD}${CYAN}  ╚══════════════════════════════════════════════╝${NC}"
     echo ""
 
-    if [ -n "${SFS_SRC}" ] && [ -f "${SFS_SRC}" ]; then
-        info "Source: squashfs (${SFS_SRC})"
-        mkdir -p "${SQUASH_MNT}"
-        mount -o loop,ro "${SFS_SRC}" "${SQUASH_MNT}"
-
-        info "Copying system files (this takes several minutes)..."
-        echo ""
-        rsync -aHAXx --info=progress2 \
-            --exclude='/boot/grub/grubenv' \
-            --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
-            --exclude='/run/*' --exclude='/tmp/*' \
-            "${SQUASH_MNT}/" "${MOUNT_ROOT}/" 2>&1 \
-            | while IFS= read -r line; do printf '  %s\r' "${line}"; done
-
-        umount "${SQUASH_MNT}"
-        rmdir "${SQUASH_MNT}" 2>/dev/null || true
-    else
-        info "Source: live overlay (squashfs not found, using rsync from /)"
-        echo ""
-        rsync -aHAXx --info=progress2 \
-            --exclude='/boot/grub/grubenv' \
-            --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
-            --exclude='/run/*' --exclude='/tmp/*' \
-            --exclude='/mnt/*' --exclude='/lost+found' \
-            / "${MOUNT_ROOT}/" 2>&1 \
-            | while IFS= read -r line; do printf '  %s\r' "${line}"; done
-    fi
-
+    # ── Bootstrap base Arch system ────────────────────────────────────────
+    info "Bootstrapping base system via pacstrap (needs internet)..."
     echo ""
+    pacstrap -K "${MOUNT_ROOT}" \
+        base base-devel linux linux-firmware \
+        sudo nano vim wget curl git openssh \
+        networkmanager wpa_supplicant wireless-regdb \
+        arch-install-scripts \
+        || die "pacstrap failed — check network and /etc/pacman.d/mirrorlist"
     echo ""
-    ok "System files installed"
+    ok "Base system installed"
+
+    # ── Copy installer into chroot, run --overlay to install JARVIS stack ─
+    local _self; _self="$(realpath "${BASH_SOURCE[0]}")"
+    cp "${_self}" "${MOUNT_ROOT}/tmp/jarvis-install"
+    chmod +x "${MOUNT_ROOT}/tmp/jarvis-install"
+
+    info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
+    echo ""
+    arch-chroot "${MOUNT_ROOT}" bash /tmp/jarvis-install --overlay \
+        || die "JARVIS component install failed"
+
+    rm -f "${MOUNT_ROOT}/tmp/jarvis-install"
+    ok "JARVIS OS components installed"
 }
 
-# ── Kernel files ───────────────────────────────────────────────────────────
+# ── Kernel selection ───────────────────────────────────────────────────────
+# linux is already installed by pacstrap. Attempt linux-jarvisos if pre-built
+# packages exist alongside the installer (e.g. from a prior make step3b run).
 ensure_kernel() {
-    local BOOTMNT="/run/archiso/bootmnt"
-    local ARCH_BOOT="${BOOTMNT}/arch/boot/x86_64"
+    KERNEL_PKG="linux"
 
-    ensure_bootmnt
+    local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _pkg_dir="${_script_dir}/../../build/kernel-pkg"
+    local _pkg; _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+                        ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
+                        | sort -V | tail -1 || true)
+    local _hdr; _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
+                        2>/dev/null | sort -V | tail -1 || true)
 
-    # Copy linux-jarvisos kernel if available on the live medium
-    if [ -f "${ARCH_BOOT}/vmlinuz-linux-jarvisos" ]; then
-        cp -f "${ARCH_BOOT}/vmlinuz-linux-jarvisos" \
-              "${MOUNT_ROOT}/boot/vmlinuz-linux-jarvisos" 2>/dev/null || true
-        cp -f "${ARCH_BOOT}/initramfs-linux-jarvisos.img" \
-              "${MOUNT_ROOT}/boot/initramfs-linux-jarvisos.img" 2>/dev/null || true
-        cp -f "${ARCH_BOOT}/initramfs-linux-jarvisos-fallback.img" \
-              "${MOUNT_ROOT}/boot/initramfs-linux-jarvisos-fallback.img" 2>/dev/null || true
-        ok "linux-jarvisos kernel files copied"
-        KERNEL_PKG="linux-jarvisos"
+    if [ -n "${_pkg}" ] && [ -n "${_hdr}" ]; then
+        info "Found pre-built linux-jarvisos — installing into target..."
+        cp "${_pkg}" "${_hdr}" "${MOUNT_ROOT}/tmp/"
+        arch-chroot "${MOUNT_ROOT}" pacman -U --noconfirm \
+            "/tmp/$(basename "${_pkg}")" "/tmp/$(basename "${_hdr}")" \
+            && ok "linux-jarvisos installed" && KERNEL_PKG="linux-jarvisos" \
+            || warn "linux-jarvisos install failed — using stock linux kernel"
+        rm -f "${MOUNT_ROOT}/tmp/"linux-jarvisos*.pkg.tar.zst 2>/dev/null || true
     else
-        info "linux-jarvisos not found on live medium — using stock linux kernel"
-        KERNEL_PKG="linux"
+        info "No pre-built linux-jarvisos found — using stock linux kernel"
     fi
 }
 
@@ -1948,7 +1919,7 @@ main() {
 
     install_system
 
-    info "Copying kernel files..."
+    info "Checking for linux-jarvisos kernel..."
     ensure_kernel
 
     info "Generating fstab..."
