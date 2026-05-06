@@ -222,8 +222,8 @@ export MAKEFLAGS="-j${NCPU}"
 # Allow skipping the kernel compilation when packages are already built.
 # Set SKIP_KERNEL_BUILD=1 to reuse existing packages in ${PKG_DEST} and jump
 # straight to the install + initramfs steps.
-EXISTING_PKG_LINUX=$(ls -t "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1)
-EXISTING_PKG_HEADERS=$(ls -t "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1)
+EXISTING_PKG_LINUX=$(ls -t "${PKG_DEST}"/linux-jarvisos-[0-9]*.pkg.tar.zst 2>/dev/null | head -1) || true
+EXISTING_PKG_HEADERS=$(ls -t "${PKG_DEST}"/linux-jarvisos-headers-*.pkg.tar.zst 2>/dev/null | head -1) || true
 
 if [[ "${SKIP_KERNEL_BUILD:-0}" == "1" ]] \
    && [[ -n "${EXISTING_PKG_LINUX}" ]] \
