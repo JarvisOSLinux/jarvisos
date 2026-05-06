@@ -302,7 +302,7 @@ step_hostname() {
     HOSTNAME_VAL=$(d_input "Hostname" "Enter the system hostname:" "jarvisos") || { clear; exit 0; }
     HOSTNAME_VAL="${HOSTNAME_VAL:-jarvisos}"
     HOSTNAME_VAL=$(echo "${HOSTNAME_VAL}" | tr -cd '[:alnum:]-' | head -c 63)
-    [ -z "${HOSTNAME_VAL}" ] && HOSTNAME_VAL="jarvisos"
+    if [ -z "${HOSTNAME_VAL}" ]; then HOSTNAME_VAL="jarvisos"; fi
 }
 
 # ── Step 10: User ──────────────────────────────────────────────────────────
@@ -1670,6 +1670,164 @@ systemctl disable jarvis-setup.service 2>/dev/null || true
 echo "First-boot complete."
 FIRSTBOOT
     chmod 755 /usr/local/bin/jarvis-first-boot.sh
+
+    # ── First-login welcome + model selection wizard ──────────────────────
+    cat > /usr/local/bin/jarvis-welcome.sh << 'WELCOMEEOF'
+#!/bin/bash
+# JARVIS OS first-login setup wizard — runs once via KDE autostart
+MARKER="${HOME}/.config/jarvis-welcome-done"
+ENV_FILE="/usr/lib/jarvis/.env"
+BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+RED='\033[0;31m'; NC='\033[0m'
+
+[ -f "$MARKER" ] && exit 0
+
+clear
+echo ""
+echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}${CYAN}  ║              Welcome to JARVIS OS                  ║${NC}"
+echo -e "${BOLD}${CYAN}  ║           AI-Native Linux Distribution             ║${NC}"
+echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# ── Wait for Ollama ───────────────────────────────────────────────────────
+echo -e "  Checking Ollama AI engine..."
+for i in $(seq 1 30); do
+    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+    sleep 2
+done
+
+OLLAMA_OK=false
+curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && OLLAMA_OK=true
+
+if $OLLAMA_OK; then
+    echo -e "  ${GREEN}✓ Ollama ready${NC}"
+else
+    echo -e "  ${YELLOW}⚠ Ollama not responding — services may still be starting.${NC}"
+    echo -e "    Check: sudo systemctl status ollama"
+fi
+echo ""
+
+# ── Read current model from .env ─────────────────────────────────────────
+CURRENT_MODEL="qwen3:4b"
+if [ -f "$ENV_FILE" ]; then
+    _m=$(grep -E '^LLM_MODEL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    [ -n "$_m" ] && CURRENT_MODEL="$_m"
+fi
+
+# ── Check model already downloaded ───────────────────────────────────────
+MODEL_READY=false
+if $OLLAMA_OK && ollama list 2>/dev/null | grep -q "${CURRENT_MODEL%%:*}"; then
+    MODEL_READY=true
+fi
+
+if $MODEL_READY; then
+    echo -e "  ${GREEN}✓ AI model ready: ${CURRENT_MODEL}${NC}"
+else
+    echo -e "  ${YELLOW}⚠ AI model not yet downloaded: ${CURRENT_MODEL}${NC}"
+    echo -e "    First-boot service will pull it automatically (needs internet)."
+fi
+echo ""
+
+# ── Model selection ───────────────────────────────────────────────────────
+MODEL_CHOICE="keep"
+if command -v dialog >/dev/null 2>&1; then
+    MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
+        --title "AI Model Selection" \
+        --menu "Select AI model (current: ${CURRENT_MODEL}):" 20 72 7 \
+        "keep"          "Keep current: ${CURRENT_MODEL}" \
+        "qwen3:4b"      "Qwen3 4B     — recommended  (~2.6 GB)" \
+        "qwen3:8b"      "Qwen3 8B     — better quality (~5.2 GB)" \
+        "llama3.2:3b"   "Llama 3.2 3B — lightweight  (~2.0 GB)" \
+        "llama3.1:8b"   "Llama 3.1 8B — high quality (~4.9 GB)" \
+        "gemma3:4b"     "Gemma 3 4B   — Google model (~3.3 GB)" \
+        "custom"        "Enter custom model name" \
+        3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
+
+    if [ "${MODEL_CHOICE:-}" = "custom" ]; then
+        MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
+            --title "Custom Model" \
+            --inputbox "Enter Ollama model name (e.g. mistral:7b, phi3:mini):" \
+            8 60 "${CURRENT_MODEL}" \
+            3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
+    fi
+    clear
+fi
+[ -z "${MODEL_CHOICE:-}" ] && MODEL_CHOICE="keep"
+
+# ── Apply model change ────────────────────────────────────────────────────
+if [ "${MODEL_CHOICE}" != "keep" ] && [ -n "${MODEL_CHOICE}" ] \
+        && [ "${MODEL_CHOICE}" != "${CURRENT_MODEL}" ]; then
+    echo -e "  Switching model to: ${MODEL_CHOICE}"
+    if [ -f "$ENV_FILE" ]; then
+        if [ -w "$ENV_FILE" ]; then
+            grep -q "^LLM_MODEL=" "$ENV_FILE" \
+                && sed -i "s|^LLM_MODEL=.*|LLM_MODEL=${MODEL_CHOICE}|" "$ENV_FILE" \
+                || echo "LLM_MODEL=${MODEL_CHOICE}" >> "$ENV_FILE"
+        else
+            grep -q "^LLM_MODEL=" "$ENV_FILE" \
+                && sudo sed -i "s|^LLM_MODEL=.*|LLM_MODEL=${MODEL_CHOICE}|" "$ENV_FILE" \
+                || echo "LLM_MODEL=${MODEL_CHOICE}" | sudo tee -a "$ENV_FILE" >/dev/null
+        fi
+    fi
+    CURRENT_MODEL="${MODEL_CHOICE}"
+    MODEL_READY=false
+fi
+
+# ── Pull model if not downloaded ─────────────────────────────────────────
+if ! $MODEL_READY && $OLLAMA_OK; then
+    echo ""
+    echo -e "  Pulling AI model: ${BOLD}${CURRENT_MODEL}${NC}"
+    echo -e "  This may take several minutes depending on your connection..."
+    echo ""
+    if ollama pull "${CURRENT_MODEL}"; then
+        echo ""
+        echo -e "  ${GREEN}✓ Model downloaded: ${CURRENT_MODEL}${NC}"
+        MODEL_READY=true
+        sudo systemctl disable jarvis-setup.service 2>/dev/null || true
+        sudo touch /var/lib/jarvis/.setup-done 2>/dev/null || true
+    else
+        echo -e "  ${RED}✗ Model pull failed.${NC}"
+        echo -e "    Try manually: ollama pull ${CURRENT_MODEL}"
+        echo -e "    Or check:     sudo systemctl status jarvis-setup"
+        echo ""
+        echo -e "  Press Enter to continue..."
+        read -r
+    fi
+fi
+
+# ── Restart JARVIS daemon to pick up model/config changes ─────────────────
+if $MODEL_READY; then
+    sudo systemctl restart jarvis.service 2>/dev/null || true
+fi
+
+# ── Usage ─────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}${CYAN}  ║                 JARVIS OS Ready!                   ║${NC}"
+echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${BOLD}AI Model:${NC}   ${CURRENT_MODEL}"
+echo -e "  ${BOLD}Engine:${NC}     Ollama (localhost:11434)"
+echo -e "  ${BOLD}Kernel:${NC}     $(uname -r)"
+echo ""
+echo -e "  ${BOLD}How to use JARVIS:${NC}"
+echo -e "    ${BOLD}jarvis chat${NC}      — interactive AI chat"
+echo -e "    ${BOLD}jarvis voice${NC}     — voice mode (microphone + TTS)"
+echo -e "    ${BOLD}jarvis status${NC}    — service status"
+echo -e "    ${BOLD}jarvis --help${NC}    — all commands"
+echo ""
+echo -e "  ${CYAN}JARVIS runs as a background service and restarts automatically.${NC}"
+echo -e "  Find it in the applications menu or launch from terminal."
+echo ""
+echo -e "  Press Enter to close this window..."
+read -r
+
+# ── Mark done — do not re-run on next login ───────────────────────────────
+mkdir -p "$(dirname "$MARKER")"
+touch "$MARKER"
+WELCOMEEOF
+    chmod 755 /usr/local/bin/jarvis-welcome.sh
     ok "Systemd service units installed"
 
     # ── Vosk STT model ────────────────────────────────────────────────────
