@@ -150,6 +150,14 @@ step_select_disk() {
 
     TARGET_DISK=$(d_menu "Select Target Disk" 16 68 "${items[@]}") || { clear; exit 0; }
     TARGET_DISK="/dev/${TARGET_DISK}"
+
+    local _disk_bytes
+    _disk_bytes=$(lsblk -bdno SIZE "${TARGET_DISK}" 2>/dev/null || echo 0)
+    if (( _disk_bytes < 20 * 1024 * 1024 * 1024 )); then
+        d_yesno "Disk Too Small" \
+            "${TARGET_DISK} is under 20 GiB.\nJARVIS OS needs 20 GiB minimum.\n\nContinue anyway?" \
+            || { clear; echo "Aborted."; exit 0; }
+    fi
 }
 
 # ── Step 2b: Partition mode ────────────────────────────────────────────────
@@ -307,13 +315,29 @@ step_hostname() {
 
 # ── Step 10: User ──────────────────────────────────────────────────────────
 step_user() {
-    NEW_USER=$(d_input "Create User" "Enter username for the new account:" "user") || { clear; exit 0; }
-    NEW_USER="${NEW_USER:-user}"
-    NEW_USER=$(echo "${NEW_USER}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
+    local _reserved="root bin daemon mail ftp http nobody dbus systemd-network systemd-resolve"
+    while true; do
+        NEW_USER=$(d_input "Create User" "Enter username for the new account:" "user") || { clear; exit 0; }
+        NEW_USER="${NEW_USER:-user}"
+        NEW_USER=$(echo "${NEW_USER}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
+        if [ -z "${NEW_USER}" ]; then
+            d_msgbox "Invalid" "Username cannot be empty."; continue
+        fi
+        if [[ "${NEW_USER}" =~ ^[0-9] ]]; then
+            d_msgbox "Invalid" "Username cannot start with a digit."; continue
+        fi
+        if echo "${_reserved}" | grep -qw "${NEW_USER}"; then
+            d_msgbox "Reserved" "\"${NEW_USER}\" is a reserved system name. Choose another."; continue
+        fi
+        break
+    done
 
     local pass1 pass2
     while true; do
         pass1=$(d_password "User Password" "Password for ${NEW_USER}:") || { clear; exit 0; }
+        if [ -z "${pass1}" ]; then
+            d_msgbox "Empty" "Password cannot be empty."; continue
+        fi
         pass2=$(d_password "Confirm Password" "Confirm password:") || { clear; exit 0; }
         [ "${pass1}" = "${pass2}" ] && break
         d_msgbox "Mismatch" "Passwords do not match. Try again."
@@ -323,6 +347,9 @@ step_user() {
     local rp1 rp2
     while true; do
         rp1=$(d_password "Root Password" "Set the root password:") || { clear; exit 0; }
+        if [ -z "${rp1}" ]; then
+            d_msgbox "Empty" "Root password cannot be empty."; continue
+        fi
         rp2=$(d_password "Confirm Root Password" "Confirm root password:") || { clear; exit 0; }
         [ "${rp1}" = "${rp2}" ] && break
         d_msgbox "Mismatch" "Passwords do not match. Try again."
@@ -667,7 +694,7 @@ format_and_mount() {
     if $IS_EFI; then
         local esp_dev
         esp_dev=$(part "${TARGET_DISK}" 1)
-        mkfs.fat -F32 -n JARVISOS-EFI "${esp_dev}" >/dev/null
+        mkfs.fat -F32 -n JARVIS-EFI "${esp_dev}" >/dev/null
 
         if [ "${SWAP_SIZE}" != "0" ] && [ "${SWAP_SIZE}" != "file" ]; then
             local swap_dev root_dev
@@ -675,14 +702,14 @@ format_and_mount() {
             root_dev=$(part "${TARGET_DISK}" 3)
             mkswap "${swap_dev}" && swapon "${swap_dev}"
             format_root "${root_dev}"
-            mount "${root_dev}" "${MOUNT_ROOT}"
+            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
             mkdir -p "${MOUNT_ROOT}/boot"
             mount "${esp_dev}" "${MOUNT_ROOT}/boot"
         else
             local root_dev
             root_dev=$(part "${TARGET_DISK}" 2)
             format_root "${root_dev}"
-            mount "${root_dev}" "${MOUNT_ROOT}"
+            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
             mkdir -p "${MOUNT_ROOT}/boot"
             mount "${esp_dev}" "${MOUNT_ROOT}/boot"
         fi
@@ -693,12 +720,12 @@ format_and_mount() {
             root_dev=$(part "${TARGET_DISK}" 3)
             mkswap "${swap_dev}" && swapon "${swap_dev}"
             format_root "${root_dev}"
-            mount "${root_dev}" "${MOUNT_ROOT}"
+            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
         else
             local root_dev
             root_dev=$(part "${TARGET_DISK}" 2)
             format_root "${root_dev}"
-            mount "${root_dev}" "${MOUNT_ROOT}"
+            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
         fi
     fi
 
@@ -742,6 +769,27 @@ install_system() {
     echo -e "${BOLD}${CYAN}  ╚══════════════════════════════════════════════╝${NC}"
     echo ""
 
+    # ── Internet check ────────────────────────────────────────────────────
+    info "Checking internet connectivity..."
+    if ! ping -c1 -W5 archlinux.org >/dev/null 2>&1 && \
+       ! ping -c1 -W5 8.8.8.8 >/dev/null 2>&1; then
+        die "No internet connection. Connect to network before installing."
+    fi
+    ok "Internet connected"
+
+    # ── Sync clock ────────────────────────────────────────────────────────
+    info "Syncing system clock..."
+    timedatectl set-ntp true 2>/dev/null || true
+
+    # ── Detect CPU microcode ──────────────────────────────────────────────
+    local _ucode=""
+    if grep -q "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
+        _ucode="intel-ucode"
+    elif grep -q "AuthenticAMD" /proc/cpuinfo 2>/dev/null; then
+        _ucode="amd-ucode"
+    fi
+    [ -n "${_ucode}" ] && info "CPU microcode: ${_ucode}"
+
     # ── Bootstrap base Arch system ────────────────────────────────────────
     info "Bootstrapping base system via pacstrap (needs internet)..."
     echo ""
@@ -749,15 +797,26 @@ install_system() {
         base base-devel linux linux-firmware \
         sudo nano vim wget curl git openssh \
         networkmanager wpa_supplicant wireless-regdb \
-        arch-install-scripts \
+        arch-install-scripts dialog \
+        ${_ucode:+"${_ucode}"} \
         || die "pacstrap failed — check network and /etc/pacman.d/mirrorlist"
     echo ""
     ok "Base system installed"
+
+    # ── Copy mirrorlist from live ISO into target ─────────────────────────
+    cp /etc/pacman.d/mirrorlist "${MOUNT_ROOT}/etc/pacman.d/mirrorlist" 2>/dev/null || true
 
     # ── Copy installer into chroot, run --overlay to install JARVIS stack ─
     local _self; _self="$(realpath "${BASH_SOURCE[0]}")"
     cp "${_self}" "${MOUNT_ROOT}/tmp/jarvis-install"
     chmod +x "${MOUNT_ROOT}/tmp/jarvis-install"
+
+    # Pre-seed JARVIS source from live ISO so --overlay doesn't need GitHub
+    if [ -d /usr/lib/jarvis ] && [ -n "$(ls -A /usr/lib/jarvis 2>/dev/null)" ]; then
+        info "Copying JARVIS source from live ISO into target..."
+        mkdir -p "${MOUNT_ROOT}/usr/lib/jarvis"
+        cp -r /usr/lib/jarvis/. "${MOUNT_ROOT}/usr/lib/jarvis/"
+    fi
 
     info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
     echo ""
@@ -770,12 +829,29 @@ install_system() {
 
 # ── Kernel selection ───────────────────────────────────────────────────────
 # linux is already installed by pacstrap. Attempt linux-jarvisos if pre-built
-# packages exist alongside the installer (e.g. from a prior make step3b run).
+# packages exist. Checks multiple candidate locations:
+#   1. /opt/jarvis-kernel-pkg/ — copied into live ISO by 05-bake-installer.sh
+#   2. Relative to installer script (dev/host installs)
 ensure_kernel() {
     KERNEL_PKG="linux"
 
     local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local _pkg_dir="${_script_dir}/../../build/kernel-pkg"
+    local _pkg_dir=""
+    local _candidate
+    for _candidate in \
+        "/opt/jarvis-kernel-pkg" \
+        "${_script_dir}/../../build/kernel-pkg" \
+        "${_script_dir}/../build/kernel-pkg"; do
+        if [ -d "${_candidate}" ] && \
+           find "${_candidate}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+               ! -name 'linux-jarvisos-headers-*' -quit 2>/dev/null | grep -q .; then
+            _pkg_dir="${_candidate}"
+            break
+        fi
+    done
+
+    [ -z "${_pkg_dir}" ] && { info "No pre-built linux-jarvisos found — using stock linux kernel"; return 0; }
+
     local _pkg; _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
                         ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
                         | sort -V | tail -1 || true)
@@ -832,14 +908,16 @@ else
     warn "Timezone ${TIMEZONE} not found — defaulting to UTC"
     ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 fi
-hwclock --systohc
+timedatectl set-ntp true 2>/dev/null || true
+hwclock --systohc 2>/dev/null || true
 
 # Locale
 LOCALE_BASE=$(echo "${LOCALE}" | cut -d' ' -f1)
-sed -i "s/^#\(${LOCALE_BASE}\)/\1/" /etc/locale.gen 2>/dev/null || true
+LOCALE_ESC="${LOCALE_BASE//./\\.}"
+sed -i "s/^#\(${LOCALE_ESC}\)/\1/" /etc/locale.gen 2>/dev/null || true
 # Also ensure en_US is generated if a different locale is chosen
-grep -q "^en_US.UTF-8" /etc/locale.gen 2>/dev/null || \
-    sed -i 's/^#\(en_US.UTF-8\)/\1/' /etc/locale.gen 2>/dev/null || true
+grep -q "^en_US\.UTF-8" /etc/locale.gen 2>/dev/null || \
+    sed -i 's/^#\(en_US\.UTF-8\)/\1/' /etc/locale.gen 2>/dev/null || true
 locale-gen
 echo "LANG=${LOCALE_BASE}" > /etc/locale.conf
 
@@ -855,7 +933,7 @@ cat > /etc/hosts << EOF
 EOF
 
 # Root password
-echo "root:${ROOT_PASS}" | chpasswd
+printf '%s:%s\n' "root" "${ROOT_PASS}" | chpasswd
 
 # User setup
 for grp in wheel audio video storage optical network power lp sys scanner input; do
@@ -869,7 +947,7 @@ for grp in wheel audio video storage optical network power lp sys scanner input;
     usermod -aG "${grp}" "${NEW_USER}" 2>/dev/null || true
 done
 
-echo "${NEW_USER}:${USER_PASS}" | chpasswd
+printf '%s:%s\n' "${NEW_USER}" "${USER_PASS}" | chpasswd
 
 # sudoers
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers 2>/dev/null || \
@@ -900,7 +978,7 @@ rm -f /etc/polkit-1/rules.d/50-liveuser.rules 2>/dev/null || true
 
 # Fix mkinitcpio.conf for installed system
 # Remove archiso/memdisk live hooks; add block+filesystems for real boot
-sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap block filesystems)/' \
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap block filesystems fsck)/' \
     /etc/mkinitcpio.conf
 
 # mkinitcpio
@@ -1000,7 +1078,8 @@ install_bootloader() {
     fi
 
     if [ "${BOOT_LOADER}" = "systemd-boot" ]; then
-        arch-chroot "${MOUNT_ROOT}" bootctl --esp-path=/boot install
+        arch-chroot "${MOUNT_ROOT}" bootctl --esp-path=/boot install \
+            || die "bootctl install failed — EFI partition may not be mounted at /boot"
 
         cat > "${MOUNT_ROOT}/boot/loader/loader.conf" << 'LCONF'
 default jarvisos.conf
@@ -1015,13 +1094,14 @@ LCONF
             "$(findmnt -n -o SOURCE "${MOUNT_ROOT}" 2>/dev/null)" 2>/dev/null || \
             blkid -s UUID -o value \
             "$(mount | grep " ${MOUNT_ROOT} " | awk '{print $1}')" 2>/dev/null || true)
+        [ -z "${ROOT_UUID}" ] && die "Cannot determine root partition UUID — run blkid manually and check ${MOUNT_ROOT} is mounted"
 
         local FS_OPTS="rw quiet splash"
         [ "${FS_TYPE}" = "btrfs" ] && FS_OPTS="rw quiet splash rootflags=subvol=@"
 
         local UCODE_LINES=""
-        [ -f "${MOUNT_ROOT}/boot/intel-ucode.img" ] && UCODE_LINES+="initrd  /intel-ucode.img\n"
-        [ -f "${MOUNT_ROOT}/boot/amd-ucode.img"   ] && UCODE_LINES+="initrd  /amd-ucode.img\n"
+        [ -f "${MOUNT_ROOT}/boot/intel-ucode.img" ] && UCODE_LINES+=$'initrd  /intel-ucode.img\n'
+        [ -f "${MOUNT_ROOT}/boot/amd-ucode.img"   ] && UCODE_LINES+=$'initrd  /amd-ucode.img\n'
 
         printf "title   JARVIS OS\nlinux   /%s\n%sinitrd  /%s\noptions root=UUID=%s %s\n" \
             "${KERN_VMLINUZ}" "${UCODE_LINES}" "${KERN_INITRD}" "${ROOT_UUID}" "${FS_OPTS}" \
@@ -1038,12 +1118,14 @@ LCONF
                 --target=x86_64-efi \
                 --efi-directory=/boot \
                 --bootloader-id=JARVISOS \
-                --recheck
+                --recheck \
+                || die "grub-install (EFI) failed — check EFI partition and grub package"
         else
             arch-chroot "${MOUNT_ROOT}" grub-install \
                 --target=i386-pc \
                 --recheck \
-                "${TARGET_DISK}"
+                "${TARGET_DISK}" \
+                || die "grub-install (BIOS) failed — check disk and grub package"
         fi
 
         sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=5/' \
@@ -1051,7 +1133,8 @@ LCONF
         sed -i 's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=menu/' \
             "${MOUNT_ROOT}/etc/default/grub" 2>/dev/null || true
 
-        arch-chroot "${MOUNT_ROOT}" grub-mkconfig -o /boot/grub/grub.cfg
+        arch-chroot "${MOUNT_ROOT}" grub-mkconfig -o /boot/grub/grub.cfg \
+            || die "grub-mkconfig failed — installed system will not boot"
 
         ok "GRUB installed"
     fi
@@ -1061,12 +1144,23 @@ LCONF
 create_swapfile() {
     if [ "${SWAP_SIZE}" = "file" ]; then
         info "Creating 4 GiB swap file..."
-        arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
-            dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress 2>&1 || true
-            chmod 600 /swapfile
-            mkswap /swapfile
-            swapon /swapfile
-        "
+        if [ "${FS_TYPE}" = "btrfs" ]; then
+            arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
+                truncate -s 0 /swapfile
+                chattr +C /swapfile
+                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress 2>&1 || true
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+            " || warn "btrfs swapfile setup failed — add swap manually after boot"
+        else
+            arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
+                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress 2>&1 || true
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+            " || warn "Swapfile setup failed — add swap manually after boot"
+        fi
         echo "/swapfile none swap defaults 0 0" >> "${MOUNT_ROOT}/etc/fstab"
         ok "Swap file created"
     fi
@@ -1177,9 +1271,10 @@ install_packages_mode() {
     distro_name=$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null \
         | cut -d= -f2 | tr -d '"' || echo "Arch Linux")
 
-    dialog --clear --backtitle "JARVIS OS Package Installer" \
-           --title "Install JARVIS OS on ${distro_name}" \
-           --yesno "\
+    if [[ "${OVERLAY_MODE:-}" != "--overlay" ]]; then
+        dialog --clear --backtitle "JARVIS OS Package Installer" \
+               --title "Install JARVIS OS on ${distro_name}" \
+               --yesno "\
 Install JARVIS OS components on: ${distro_name}
 
 This will install (existing packages kept):
@@ -1199,6 +1294,7 @@ This will install (existing packages kept):
 No disk will be wiped. No partitioning.
 
 Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
+    fi
 
     clear
     echo ""
@@ -1216,7 +1312,7 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
     info "Installing base utilities..."
     pacman -S --noconfirm --needed \
         sudo less nano vim wget curl git openssh man-db man-pages \
-        unzip zip p7zip rsync tzdata bash-completion which lsof htop neofetch \
+        unzip zip p7zip rsync tzdata bash-completion which lsof htop fastfetch \
         || warn "Some base packages failed"
     ok "Base utilities installed"
 
@@ -1237,14 +1333,27 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
             return 0
         fi
 
-        # 2. Pre-built package nearby (sibling build/kernel-pkg/ from ISO build)?
+        # 2. Pre-built package nearby — check multiple candidate locations
         local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        local _pkg_dir="${_script_dir}/../../build/kernel-pkg"
-        local _pkg; _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+        local _pkg_dir="" _cand
+        for _cand in \
+            "/opt/jarvis-kernel-pkg" \
+            "${_script_dir}/../../build/kernel-pkg" \
+            "${_script_dir}/../build/kernel-pkg"; do
+            if [ -d "${_cand}" ] && \
+               find "${_cand}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+                   ! -name 'linux-jarvisos-headers-*' -quit 2>/dev/null | grep -q .; then
+                _pkg_dir="${_cand}"; break
+            fi
+        done
+        local _pkg="" _hdr=""
+        if [ -n "${_pkg_dir}" ]; then
+        _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
                             ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
                             | sort -V | tail -1 || true)
-        local _hdr; _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
+        _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
                             2>/dev/null | sort -V | tail -1 || true)
+        fi
 
         if [ -n "${_pkg}" ] && [ -n "${_hdr}" ]; then
             info "Found pre-built packages: $(basename "${_pkg}")"
@@ -1443,7 +1552,7 @@ OLLAMAEOF
     # ── JARVIS code ───────────────────────────────────────────────────────
     info "Installing JARVIS code..."
     local _jarvis_src
-    _jarvis_src=$(find_jarvis_source)
+    _jarvis_src=$(find_jarvis_source) || true
 
     if [ "${_jarvis_src}" = "installed" ]; then
         ok "JARVIS code already at /usr/lib/jarvis"
@@ -1479,8 +1588,10 @@ OLLAMAEOF
     if [ -f /usr/lib/jarvis/requirements.txt ]; then
         if [ ! -d /var/lib/jarvis/venv ]; then
             info "Creating Python virtual environment..."
-            python3 -m venv /var/lib/jarvis/venv
-            /var/lib/jarvis/venv/bin/pip install --upgrade pip
+            python3 -m venv /var/lib/jarvis/venv \
+                || { warn "python3 -m venv failed — skipping venv setup"; return 0; }
+            /var/lib/jarvis/venv/bin/pip install --upgrade pip \
+                || warn "pip upgrade failed — continuing"
             /var/lib/jarvis/venv/bin/pip install -r /usr/lib/jarvis/requirements.txt \
                 || warn "Some Python deps failed — check /var/lib/jarvis/venv manually"
             chown -R jarvis:jarvis /var/lib/jarvis/venv
@@ -1926,7 +2037,7 @@ EOF
 
     # ── Enable / disable services ─────────────────────────────────────────
     info "Enabling systemd services..."
-    systemctl daemon-reload
+    systemctl daemon-reload 2>/dev/null || true
     systemctl enable NetworkManager.service              2>/dev/null || true
     systemctl enable systemd-resolved.service            2>/dev/null || true
     systemctl enable sddm.service                        2>/dev/null || true
@@ -2000,7 +2111,7 @@ uninstall_mode() {
     userdel jarvis 2>/dev/null || true
     groupdel jarvis 2>/dev/null || true
 
-    systemctl daemon-reload
+    systemctl daemon-reload 2>/dev/null || true
 
     echo ""
     echo -e "${GREEN}JARVIS OS components removed.${NC}"
@@ -2017,6 +2128,7 @@ uninstall_mode() {
 main() {
     # Overlay-install mode: add JarvisOS components to existing Arch system
     if [[ "${1:-}" == "--install-packages" || "${1:-}" == "--overlay" ]]; then
+        OVERLAY_MODE="${1}"
         install_packages_mode
         exit 0
     fi

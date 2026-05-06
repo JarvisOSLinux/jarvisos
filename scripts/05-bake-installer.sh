@@ -22,6 +22,7 @@ SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 BUILD_DEPS_DIR="${PROJECT_ROOT}${BUILD_DEPS_DIR}"
 PACKAGES_DIR="${PROJECT_ROOT}/packages"
 INSTALLER_SRC="${PACKAGES_DIR}/jarvis-installer/jarvis-install.sh"
+KERNEL_PKG_DIR="${PROJECT_ROOT}/build/kernel-pkg"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -224,6 +225,22 @@ polkit.addRule(function(action, subject) {
 EOF
 sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/50-liveuser.rules"
 echo -e "${GREEN}✓ Polkit rules installed${NC}"
+
+# ── Copy linux-jarvisos packages into live ISO (for installer's ensure_kernel) ─
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+_kpkg=$(find "${KERNEL_PKG_DIR}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+        ! -name 'linux-jarvisos-headers-*' 2>/dev/null | sort -V | tail -1 || true)
+_khdr=$(find "${KERNEL_PKG_DIR}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
+        2>/dev/null | sort -V | tail -1 || true)
+if [ -n "${_kpkg}" ] && [ -n "${_khdr}" ]; then
+    echo -e "${BLUE}Copying linux-jarvisos packages into live rootfs...${NC}"
+    sudo mkdir -p "${SQUASHFS_ROOTFS}/opt/jarvis-kernel-pkg"
+    sudo cp "${_kpkg}" "${_khdr}" "${SQUASHFS_ROOTFS}/opt/jarvis-kernel-pkg/"
+    echo -e "${GREEN}✓ linux-jarvisos packages staged at /opt/jarvis-kernel-pkg/${NC}"
+else
+    echo -e "${YELLOW}⚠ No pre-built linux-jarvisos packages found in build/kernel-pkg/ — run make step3b first${NC}"
+    echo -e "${YELLOW}  Installer will fall back to stock linux kernel${NC}"
+fi
 
 # ── Cleanup package cache ─────────────────────────────────────────────────────
 echo -e "${BLUE}Cleaning package cache...${NC}"
