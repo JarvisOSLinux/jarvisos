@@ -614,10 +614,9 @@ manual_format_and_mount() {
     # Sort by mount depth (number of slashes)
     local sorted=()
     if [ ${#entries[@]} -gt 0 ]; then
-        IFS=$'\n' sorted=($(printf '%s\n' "${entries[@]}" \
+        mapfile -t sorted < <(printf '%s\n' "${entries[@]}" \
             | awk -F: '{n=split($1,a,"/"); print n":"$0}' \
-            | sort -n | sed 's/^[0-9]*://'))
-        unset IFS
+            | sort -n | sed 's/^[0-9]*://')
     fi
 
     for entry in "${sorted[@]}"; do
@@ -818,12 +817,24 @@ install_system() {
         cp -r /usr/lib/jarvis/. "${MOUNT_ROOT}/usr/lib/jarvis/"
     fi
 
+    # Pre-seed linux-jarvisos packages into chroot so --overlay's
+    # _install_linux_jarvisos() can find them at /opt/jarvis-kernel-pkg.
+    # Without this, BASH_SOURCE[0]=/tmp/jarvis-install → relative paths
+    # resolve to /build/kernel-pkg which doesn't exist inside the chroot.
+    if [ -d /opt/jarvis-kernel-pkg ] && \
+       find /opt/jarvis-kernel-pkg -name 'linux-jarvisos-*.pkg.tar.zst' -quit 2>/dev/null | grep -q .; then
+        info "Staging linux-jarvisos packages into target for --overlay..."
+        mkdir -p "${MOUNT_ROOT}/opt/jarvis-kernel-pkg"
+        cp /opt/jarvis-kernel-pkg/linux-jarvisos-*.pkg.tar.zst "${MOUNT_ROOT}/opt/jarvis-kernel-pkg/"
+    fi
+
     info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
     echo ""
     arch-chroot "${MOUNT_ROOT}" bash /tmp/jarvis-install --overlay \
         || die "JARVIS component install failed"
 
     rm -f "${MOUNT_ROOT}/tmp/jarvis-install"
+    rm -rf "${MOUNT_ROOT}/opt/jarvis-kernel-pkg" 2>/dev/null || true
     ok "JARVIS OS components installed"
 }
 
@@ -834,6 +845,15 @@ install_system() {
 #   2. Relative to installer script (dev/host installs)
 ensure_kernel() {
     KERNEL_PKG="linux"
+
+    # --overlay phase runs pacman -U linux-jarvisos inside the chroot before we
+    # get here.  Reinstalling would re-trigger the .install mkinitcpio call which
+    # fails on archiso hooks and makes the && chain not set KERNEL_PKG.
+    if arch-chroot "${MOUNT_ROOT}" pacman -Q linux-jarvisos >/dev/null 2>&1; then
+        ok "linux-jarvisos already installed (overlay phase)"
+        KERNEL_PKG="linux-jarvisos"
+        return 0
+    fi
 
     local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local _pkg_dir=""
@@ -994,7 +1014,7 @@ if [ "${KERNEL_PKG}" = "linux-jarvisos" ]; then
         # The installed system will NOT boot from it.  Re-generate using the
         # kernel version string found in /usr/lib/modules/.
         warn "linux-jarvisos.preset missing — rebuilding initramfs directly"
-        _kver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos')
+        _kver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
         if [ -n "${_kver}" ]; then
             mkinitcpio -k "${_kver}" -g /boot/initramfs-linux-jarvisos.img \
                 || warn "mkinitcpio failed — check /boot/ manually after install"
@@ -1010,6 +1030,13 @@ else
         mkinitcpio -p linux || warn "mkinitcpio failed"
     fi
 fi
+
+# Ensure jarvis.ko auto-loads at boot via systemd-modules-load.
+# Needed because pre-built packages may pre-date the modules-load.d addition
+# in PKGBUILD, and post_install() mkinitcpio may fail with archiso hooks.
+_jkver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
+[ -n "${_jkver}" ] && depmod -a "${_jkver}" 2>/dev/null || true
+install -Dm644 /dev/stdin /usr/lib/modules-load.d/jarvis.conf <<< 'jarvis'
 
 # Enable services
 systemctl enable NetworkManager.service              2>/dev/null || true
@@ -1146,16 +1173,18 @@ create_swapfile() {
         info "Creating 4 GiB swap file..."
         if [ "${FS_TYPE}" = "btrfs" ]; then
             arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
+                set -e
                 truncate -s 0 /swapfile
                 chattr +C /swapfile
-                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress 2>&1 || true
+                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
                 chmod 600 /swapfile
                 mkswap /swapfile
                 swapon /swapfile
             " || warn "btrfs swapfile setup failed — add swap manually after boot"
         else
             arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
-                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress 2>&1 || true
+                set -e
+                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
                 chmod 600 /swapfile
                 mkswap /swapfile
                 swapon /swapfile
@@ -1348,11 +1377,11 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
         done
         local _pkg="" _hdr=""
         if [ -n "${_pkg_dir}" ]; then
-        _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-                            ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
-                            | sort -V | tail -1 || true)
-        _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
-                            2>/dev/null | sort -V | tail -1 || true)
+            _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+                        ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
+                        | sort -V | tail -1 || true)
+            _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
+                        2>/dev/null | sort -V | tail -1 || true)
         fi
 
         if [ -n "${_pkg}" ] && [ -n "${_hdr}" ]; then
@@ -1385,6 +1414,17 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
         return 0
     }
     _install_linux_jarvisos
+
+    # Ensure jarvis.ko auto-loads at boot — create modules-load.d entry and
+    # regenerate modules.dep. Handles pre-built packages that pre-date the
+    # modules-load.d addition in PKGBUILD.
+    if pacman -Q linux-jarvisos >/dev/null 2>&1; then
+        local _jkver; _jkver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
+        [ -n "${_jkver}" ] && depmod -a "${_jkver}" 2>/dev/null \
+            && ok "jarvis module dependency map regenerated (${_jkver})" \
+            || warn "depmod failed for linux-jarvisos — run 'depmod -a' manually after reboot"
+        install -Dm644 /dev/stdin /usr/lib/modules-load.d/jarvis.conf <<< 'jarvis'
+    fi
 
     # Update GRUB/systemd-boot to add linux-jarvisos entry if kernel installed
     if pacman -Q linux-jarvisos >/dev/null 2>&1; then
@@ -1710,6 +1750,7 @@ SupplementaryGroups=audio video network systemd-journal storage
 WorkingDirectory=/usr/lib/jarvis
 RuntimeDirectory=jarvis
 RuntimeDirectoryMode=0775
+ExecStartPre=-+/sbin/modprobe jarvis
 ExecStart=/usr/bin/jarvis-daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
@@ -1768,9 +1809,11 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== JARVIS first-boot $(date) ==="
 [ -f "$MARKER" ] && echo "Already done." && exit 0
 MODEL="qwen3:4b"
-[ -f /usr/lib/jarvis/.env ] && \
-    _m=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2-) && \
+_m=""
+if [ -f /usr/lib/jarvis/.env ]; then
+    _m=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
     [ -n "$_m" ] && MODEL="$_m"
+fi
 echo "Waiting for Ollama..."
 for i in $(seq 1 60); do
     curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 2

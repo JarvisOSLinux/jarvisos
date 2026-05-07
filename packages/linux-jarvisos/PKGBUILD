@@ -257,6 +257,9 @@ package_linux-jarvisos() {
     # Remove host-path symlinks; linux-jarvisos-headers provides the build/ dir
     rm -f "$modulesdir"/{source,build}
 
+    echo "  -> Installing modules-load.d config (auto-load jarvis.ko at boot)..."
+    install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/jarvis.conf" <<< 'jarvis'
+
     echo "  -> Installing mkinitcpio preset..."
     # CRITICAL: ALL_kver must be the kernel VERSION STRING (e.g. "6.19.6-jarvisos-g...")
     # that matches the directory name under /usr/lib/modules/.
