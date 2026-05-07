@@ -828,6 +828,10 @@ install_system() {
         cp /opt/jarvis-kernel-pkg/linux-jarvisos-*.pkg.tar.zst "${MOUNT_ROOT}/opt/jarvis-kernel-pkg/"
     fi
 
+    # Ensure DNS works inside the chroot for pacman and curl downloads.
+    # configure_system() sets up the symlink later; copy the real file now.
+    cp --dereference /etc/resolv.conf "${MOUNT_ROOT}/etc/resolv.conf" 2>/dev/null || true
+
     info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
     echo ""
     arch-chroot "${MOUNT_ROOT}" bash /tmp/jarvis-install --overlay \
@@ -1036,7 +1040,8 @@ fi
 # in PKGBUILD, and post_install() mkinitcpio may fail with archiso hooks.
 _jkver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
 [ -n "${_jkver}" ] && depmod -a "${_jkver}" 2>/dev/null || true
-install -Dm644 /dev/stdin /usr/lib/modules-load.d/jarvis.conf <<< 'jarvis'
+mkdir -p /usr/lib/modules-load.d
+printf 'jarvis\n' > /usr/lib/modules-load.d/jarvis.conf
 
 # Enable services
 systemctl enable NetworkManager.service              2>/dev/null || true
@@ -1210,7 +1215,7 @@ detect_arch_based() {
         id_like=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"')
     fi
     case "${id}" in
-        arch|manjaro|endeavouros|garuda|cachyos|artix|parabola|arcolinux) return 0 ;;
+        arch|manjaro|endeavouros|garuda|cachyos|artix|parabola|arcolinux|jarvisos) return 0 ;;
     esac
     [[ "${id_like}" == *arch* ]] && return 0
     die "Not an Arch-based system (ID=${id:-unknown}, ID_LIKE=${id_like:-unknown}).\nRun on Arch Linux or an Arch-based distro."
@@ -1293,6 +1298,7 @@ _install_ollama_gpu() {
 
 # ── Install JARVIS OS components on existing Arch system ───────────────────
 install_packages_mode() {
+    trap 'echo "JARVIS overlay failed at line $LINENO: $BASH_COMMAND" >&2' ERR
     need_root
     detect_arch_based
 
@@ -1423,7 +1429,8 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
         [ -n "${_jkver}" ] && depmod -a "${_jkver}" 2>/dev/null \
             && ok "jarvis module dependency map regenerated (${_jkver})" \
             || warn "depmod failed for linux-jarvisos — run 'depmod -a' manually after reboot"
-        install -Dm644 /dev/stdin /usr/lib/modules-load.d/jarvis.conf <<< 'jarvis'
+        mkdir -p /usr/lib/modules-load.d
+printf 'jarvis\n' > /usr/lib/modules-load.d/jarvis.conf
     fi
 
     # Update GRUB/systemd-boot to add linux-jarvisos entry if kernel installed
