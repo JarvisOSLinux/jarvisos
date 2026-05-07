@@ -220,7 +220,7 @@ packages/**/.MTREE
 packages/**/.PKGINFO
 build-deps/archlinux*.iso
 .claude/
-CLAUDE.md
+!CLAUDE.md
 FIRMWARE_FIXES.md
 *.png
 error.txt
