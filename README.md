@@ -347,6 +347,161 @@ Every command the AI plans is classified before execution:
 
 ---
 
+## Developer Setup on an Installed JarvisOS System
+
+If you are running JARVIS OS as your daily driver or a dev VM (not just booting a live ISO), this section covers how to get the full stack working correctly.
+
+### Prerequisites
+
+- JarvisOS installed from the live ISO (or kernel + daemon installed via `--host-install` + `--overlay`)
+- Ollama running (`systemctl status ollama`)
+- At least one model pulled: `ollama list`
+
+### 1 — Verify the kernel module loads at boot
+
+The `jarvis.ko` module must be loaded before any service starts. Check current state:
+
+```bash
+lsmod | grep jarvis        # Should show: jarvis, dibs
+ls -l /dev/jarvis          # Should exist
+```
+
+If the module is not loading automatically at boot, create the modules-load config:
+
+```bash
+sudo tee /etc/modules-load.d/jarvis.conf << 'EOF'
+# JARVIS kernel driver — provides /dev/jarvis
+jarvis
+EOF
+
+# Apply immediately without rebooting
+sudo systemctl restart systemd-modules-load.service
+```
+
+`modprobe` resolves the `dibs` dependency automatically — no separate entry needed.
+
+Verify after reboot:
+
+```bash
+uname -r                                      # Should contain jarvisos
+ls /dev/jarvis                                # Must exist
+cat /sys/class/misc/jarvis/sysmon/cpu_load    # Live CPU metric from kernel
+```
+
+### 2 — Configure the LLM model
+
+The JARVIS service and CLI both read `/etc/jarvis/jarvis.conf`. Edit it to set the model you have pulled:
+
+```bash
+ollama list                                   # Find installed models
+sudo nano /etc/jarvis/jarvis.conf
+```
+
+Key fields:
+
+```ini
+LLM_MODEL=qwen3:14b          # Match an ollama list entry exactly
+LLM_URL=http://localhost:11434
+OUTPUT_MODE=text              # Use "text" if no working audio device
+LLM_AUTO_PULL=false           # Set true to auto-pull missing models
+```
+
+Apply to the running service:
+
+```bash
+sudo systemctl restart jarvis.service
+jarvis model                                  # Should echo the model name
+```
+
+### 3 — Run the TUI
+
+The interactive terminal UI (`jarvis tui`) requires the `textual` package in the JARVIS Python environment:
+
+```bash
+# Check which jarvis binary is in PATH
+which jarvis                                  # Should be /usr/local/bin/jarvis
+# That script wraps /opt/jarvis-env/bin/jarvis
+
+# Install textual if missing
+sudo /opt/jarvis-env/bin/pip install textual
+
+# Launch the TUI
+jarvis tui
+```
+
+TUI keybindings:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+N` | New session |
+| `Ctrl+Q` | Quit |
+| `Ctrl+L` | Focus chat log (scroll with arrows/PgUp) |
+| `Ctrl+I` | Focus input |
+| `F1` | Help / keybinding reference |
+| `Enter` | Submit message |
+
+### 4 — Send messages to the running daemon
+
+The JARVIS systemd service listens on a Unix socket. From any terminal:
+
+```bash
+jarvis send "what is my CPU temperature"
+```
+
+Or use text chat mode directly (bypasses the socket, runs its own event loop):
+
+```bash
+jarvis chat
+```
+
+### 5 — Verify the full stack
+
+```bash
+# Kernel driver
+ls /dev/jarvis && echo "kernel driver OK"
+
+# Daemon service
+systemctl is-active jarvis.service
+
+# Ollama reachable
+curl -s http://localhost:11434/api/tags | python3 -m json.tool | grep name
+
+# Model configured
+jarvis model
+
+# Send a test query
+jarvis ask "say hello"
+```
+
+### Runtime file layout on an installed system
+
+| Path | Purpose |
+|------|---------|
+| `/usr/local/bin/jarvis` | Shell entry point (wraps `/opt/jarvis-env/bin/jarvis`) |
+| `/opt/jarvis-env/` | Python venv with JARVIS and all dependencies |
+| `/usr/lib/jarvis/` | JARVIS Python package source |
+| `/etc/jarvis/jarvis.conf` | System-wide config (model, URLs, modes) |
+| `/usr/lib/jarvis/.env` | Fallback config when `JARVIS_CONFIG_DIR` is unset |
+| `/var/lib/jarvis/` | Runtime data (models dir, secondary venv) |
+| `/run/jarvis/input.sock` | Unix socket — `jarvis send` writes here |
+| `/run/jarvis/output.sock` | Unix socket — subscribe to receive JSON responses |
+| `/var/log/jarvis/` | Logs (also in `journalctl -u jarvis`) |
+| `/etc/modules-load.d/jarvis.conf` | Ensures `jarvis.ko` loads at boot |
+| `/dev/jarvis` | JARVIS kernel character device |
+| `/sys/class/misc/jarvis/sysmon/` | Live hardware metrics from kernel |
+
+### Config precedence
+
+```
+JARVIS_CONFIG_DIR env var → /etc/jarvis/jarvis.conf   (system install, daemon)
+                          ↓ fallback
+                          /usr/lib/jarvis/.env         (dev fallback)
+```
+
+The systemd unit sets `JARVIS_CONFIG_DIR=/etc/jarvis` via `Environment=`. The `/usr/local/bin/jarvis` wrapper sets it the same way so CLI and daemon always agree.
+
+---
+
 ## Building the JarvisOS ISO
 
 > **Work in progress.** The build pipeline runs end-to-end, but live-boot reliability and the Calamares installer are still being stabilized. Expect rough edges.
@@ -474,6 +629,8 @@ Assembles the final ISO using `xorriso`. Dynamically sizes `efiboot.img` to fit 
 | WiFi on live boot | Working | NetworkManager + wpa_supplicant backend |
 | Audio on live boot | Working | PipeWire with rtkit-daemon, per-user service symlinks |
 | Touchpad on live boot | Working | libinput + psmouse/i2c_hid modules |
+| JARVIS TUI (`jarvis tui`) | Working | Requires `textual` in `/opt/jarvis-env`; install with `sudo /opt/jarvis-env/bin/pip install textual` |
+| Kernel module autoload at boot | Working | `/etc/modules-load.d/jarvis.conf` → `jarvis`; `dibs` dep resolved automatically |
 | Calamares installer | In progress | Installs but post-install configuration needs work |
 | JARVIS daemon on installed system | In progress | Service boots; model selection needs tuning |
 
@@ -541,21 +698,94 @@ systemctl --user status pipewire
 systemctl --user start pipewire pipewire-pulse wireplumber
 ```
 
+### JARVIS TUI (`jarvis tui`)
+
+**`Error: TUI dependencies are not installed. (missing: textual)`**
+
+The `textual` package is not in the JARVIS Python environment. Install it:
+
+```bash
+sudo /opt/jarvis-env/bin/pip install textual
+jarvis tui
+```
+
+Note: the active JARVIS environment is `/opt/jarvis-env`, not `/var/lib/jarvis/venv`. Always install extra packages into `/opt/jarvis-env`.
+
+**`Error: LLM model not configured`**
+
+No model is set in the config. Set it:
+
+```bash
+sudo nano /etc/jarvis/jarvis.conf
+# Set: LLM_MODEL=qwen3:14b  (or whichever model you have pulled)
+```
+
+**`jarvis model` shows the wrong model (e.g. `qwen3:4b` when `qwen3:14b` is installed)**
+
+The CLI is reading the fallback `/usr/lib/jarvis/.env` instead of `/etc/jarvis/jarvis.conf`. Check that `JARVIS_CONFIG_DIR` is exported by the wrapper:
+
+```bash
+head /usr/local/bin/jarvis
+# Should contain: export JARVIS_CONFIG_DIR="${JARVIS_CONFIG_DIR:-/etc/jarvis}"
+```
+
+If missing, add it or re-run the jarvis-install overlay step.
+
+### Kernel module (`/dev/jarvis`)
+
+**`/dev/jarvis` missing after reboot**
+
+Module is not loading at boot. Check:
+
+```bash
+lsmod | grep jarvis
+cat /etc/modules-load.d/jarvis.conf    # Should contain: jarvis
+journalctl -b -u systemd-modules-load | grep jarvis
+```
+
+If the config file is missing, create it:
+
+```bash
+echo "jarvis" | sudo tee /etc/modules-load.d/jarvis.conf
+sudo modprobe jarvis                   # Load now without rebooting
+ls /dev/jarvis                         # Verify
+```
+
+**`modprobe: FATAL: Module jarvis not found`**
+
+The `linux-jarvisos` kernel is not running. Check:
+
+```bash
+uname -r    # Must contain "jarvisos"
+```
+
+If not, select `linux-jarvisos` from your bootloader and reboot. If it does not appear, rebuild and reinstall the kernel:
+
+```bash
+bash scripts/03b-build-kernel.sh --host-install
+```
+
 ---
 
 ## File Locations (installed system)
 
+See the full table in the [Developer Setup](#developer-setup-on-an-installed-jarvisos-system) section above. Quick reference:
+
 ```
+/usr/local/bin/jarvis                   # CLI entry point → /opt/jarvis-env/bin/jarvis
+/opt/jarvis-env/                        # JARVIS Python environment (pip install here)
+/usr/lib/jarvis/                        # JARVIS Python package source
+/etc/jarvis/jarvis.conf                 # Primary config (model, URL, output mode)
+/etc/modules-load.d/jarvis.conf         # Auto-load jarvis.ko at boot
 /dev/jarvis                             # JARVIS kernel character device
-/sys/class/misc/jarvis/sysmon/          # Live hardware metrics
+/sys/class/misc/jarvis/sysmon/          # Live hardware metrics from kernel
 /sys/class/misc/jarvis/policy/          # Active AI security policy table
 /usr/lib/modules/<kver>/kernel/drivers/jarvis/jarvis.ko.zst
-/usr/lib/jarvis/                        # JARVIS daemon code
-/var/lib/jarvis/                        # Runtime data (venv, models)
-/etc/jarvis/                            # Configuration
-/var/log/jarvis/ or /tmp/jarvis.log     # Audit log
-/usr/bin/jarvis                         # CLI wrapper
-/usr/bin/jarvis-daemon                  # Daemon binary
+/var/lib/jarvis/                        # Runtime data (models, secondary venv)
+/run/jarvis/input.sock                  # Daemon input socket (jarvis send)
+/run/jarvis/output.sock                 # Daemon output socket
+/var/log/jarvis/                        # Audit log (also: journalctl -u jarvis)
+/usr/bin/jarvis-daemon                  # Daemon launcher (used by systemd unit)
 ```
 
 ---
