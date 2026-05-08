@@ -1299,7 +1299,10 @@ _install_ollama_gpu() {
 # ── Install JARVIS OS components on existing Arch system ───────────────────
 install_packages_mode() {
     trap 'echo "JARVIS overlay failed at line $LINENO: $BASH_COMMAND" >&2' ERR
-    need_root
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Root required — re-launching with sudo (JARVIS stack install needs pacman, systemctl, etc.)"
+        exec sudo bash "${BASH_SOURCE[0]}" "${OVERLAY_MODE:---install-packages}"
+    fi
     detect_arch_based
 
     local distro_name
@@ -1403,7 +1406,8 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
         if [ -f "${_kernel_src}/Makefile" ] && [ -f "${_build_script}" ]; then
             info "Building linux-jarvisos from source (may take 20-60 min)..."
             if command -v makepkg >/dev/null 2>&1; then
-                bash "${_build_script}" --host-install \
+                local _scripts_dir; _scripts_dir="$(dirname "${_build_script}")"
+                (cd "${_scripts_dir}" && bash "${_build_script}" --host-install) \
                     && ok "linux-jarvisos built and installed from source" && return 0
                 warn "linux-jarvisos build failed"
             else
@@ -1641,6 +1645,8 @@ OLLAMAEOF
                 || warn "pip upgrade failed — continuing"
             /var/lib/jarvis/venv/bin/pip install -r /usr/lib/jarvis/requirements.txt \
                 || warn "Some Python deps failed — check /var/lib/jarvis/venv manually"
+            /var/lib/jarvis/venv/bin/pip install "textual>=0.60.0" \
+                || warn "textual install failed — run: sudo /var/lib/jarvis/venv/bin/pip install textual"
             chown -R jarvis:jarvis /var/lib/jarvis/venv
             ok "Python venv created"
         else
@@ -1775,11 +1781,11 @@ LimitNPROC=4096
 Environment=JARVIS_CONFIG_DIR=/etc/jarvis
 Environment=JARVIS_DATA_DIR=/var/lib/jarvis
 Environment=JARVIS_INPUT_SOCKET=/run/jarvis/input.sock
+Environment=JARVIS_OUTPUT_SOCKET=/run/jarvis/output.sock
 Environment=JARVIS_LOG_DIR=/var/log/jarvis
 Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
 Environment=PYTHONPATH=/usr/lib
 Environment=OLLAMA_HOST=127.0.0.1:11434
-Environment=XDG_RUNTIME_DIR=/run/user/0
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=jarvis
