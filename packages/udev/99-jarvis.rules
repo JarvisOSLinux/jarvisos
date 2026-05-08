@@ -1,0 +1,4 @@
+# /dev/jarvis — JARVIS AI kernel device
+# Grant read/write access to the jarvis group so any user in that group
+# can use the JARVIS CLI without sudo.
+KERNEL=="jarvis", GROUP="jarvis", MODE="0660"

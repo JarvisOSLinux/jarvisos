@@ -275,15 +275,28 @@ polkit.addRule(function(action, subject) {
 POLKIT_EOF
 sudo chmod 644 "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/49-jarvis.rules"
 
+# Step 5c-udev: Install udev rule so /dev/jarvis is GROUP=jarvis MODE=0660
+# This allows any user in the jarvis group to use the JARVIS CLI without sudo.
+echo -e "${BLUE}Installing udev rule for /dev/jarvis...${NC}"
+sudo mkdir -p "${SQUASHFS_ROOTFS}/usr/lib/udev/rules.d"
+sudo cp "${PROJECT_ROOT}/packages/udev/99-jarvis.rules" \
+    "${SQUASHFS_ROOTFS}/usr/lib/udev/rules.d/99-jarvis.rules"
+sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/udev/rules.d/99-jarvis.rules"
+
 # Step 6: Create directories
 echo -e "${BLUE}Creating JARVIS directories...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
     mkdir -p /usr/lib/jarvis
-    mkdir -p /etc/jarvis
     mkdir -p /var/lib/jarvis/models/piper
     mkdir -p /var/lib/jarvis/models/vosk
     mkdir -p /var/log/jarvis
-    
+
+    # /etc/jarvis: setgid so new files inherit the jarvis group;
+    # group-writable so any jarvis-group member can update config without sudo.
+    mkdir -p /etc/jarvis
+    chown jarvis:jarvis /etc/jarvis
+    chmod 2775 /etc/jarvis
+
     # Set ownership
     chown -R jarvis:jarvis /var/lib/jarvis
     chown -R jarvis:jarvis /var/log/jarvis
@@ -572,13 +585,12 @@ RestartSec=10
 TimeoutStartSec=60
 TimeoutStopSec=30
 
-# /dev/jarvis requires CAP_SYS_ADMIN (kernel driver enforces it).
 # CAP_NET_ADMIN allows direct network interface operations.
 # CAP_SYS_NICE allows rtkit real-time scheduling for PipeWire audio.
-# These are granted as ambient capabilities so the daemon inherits them
-# at exec without needing a setuid binary.
-AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_NICE
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_NICE
+# /dev/jarvis access is via group membership (GROUP=jarvis, MODE=0660) —
+# CAP_SYS_ADMIN is not needed.
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_NICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_NICE
 
 # NoNewPrivileges and RestrictSUIDSGID are intentionally absent:
 # the daemon spawns `sudo` for system management (pacman, systemctl, etc.).

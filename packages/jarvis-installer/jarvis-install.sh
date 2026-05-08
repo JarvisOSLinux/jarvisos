@@ -960,14 +960,14 @@ EOF
 printf '%s:%s\n' "root" "${ROOT_PASS}" | chpasswd
 
 # User setup
-for grp in wheel audio video storage optical network power lp sys scanner input; do
+for grp in wheel audio video storage optical network power lp sys scanner input jarvis; do
     getent group "${grp}" >/dev/null 2>&1 || groupadd --system "${grp}" 2>/dev/null || true
 done
 
-useradd -m -G wheel,audio,video,storage,optical,network,power -s /bin/bash "${NEW_USER}" 2>/dev/null || \
+useradd -m -G wheel,audio,video,storage,optical,network,power,jarvis -s /bin/bash "${NEW_USER}" 2>/dev/null || \
     useradd -m -s /bin/bash "${NEW_USER}"
 
-for grp in wheel audio video storage optical network power lp sys scanner input; do
+for grp in wheel audio video storage optical network power lp sys scanner input jarvis; do
     usermod -aG "${grp}" "${NEW_USER}" 2>/dev/null || true
 done
 
@@ -1699,11 +1699,29 @@ OLLAMAEOF
         getent group "${grp}" >/dev/null 2>&1 && \
             usermod -aG "${grp}" jarvis 2>/dev/null || true
     done
-    mkdir -p /usr/lib/jarvis /etc/jarvis \
+    mkdir -p /usr/lib/jarvis \
              /var/lib/jarvis/models/piper \
              /var/lib/jarvis/models/vosk \
              /var/log/jarvis
+    # /etc/jarvis: setgid + group-writable so jarvis-group members can update
+    # config without sudo; new files automatically inherit the jarvis group.
+    mkdir -p /etc/jarvis
+    chown jarvis:jarvis /etc/jarvis
+    chmod 2775 /etc/jarvis
     chown -R jarvis:jarvis /var/lib/jarvis /var/log/jarvis
+
+    # udev rule: /dev/jarvis GROUP=jarvis MODE=0660
+    mkdir -p /usr/lib/udev/rules.d
+    cat > /usr/lib/udev/rules.d/99-jarvis.rules << 'UDEVRULES'
+# /dev/jarvis — JARVIS AI kernel device
+# Grant read/write access to the jarvis group so any user in that group
+# can use the JARVIS CLI without sudo.
+KERNEL=="jarvis", GROUP="jarvis", MODE="0660"
+UDEVRULES
+    chmod 644 /usr/lib/udev/rules.d/99-jarvis.rules
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --name-match=jarvis 2>/dev/null || true
+
     ok "JARVIS user and directories configured"
 
     # ── JARVIS code ───────────────────────────────────────────────────────
@@ -1876,8 +1894,8 @@ Restart=always
 RestartSec=10
 TimeoutStartSec=60
 TimeoutStopSec=30
-AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_NICE
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_NICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_NICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_NICE
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
