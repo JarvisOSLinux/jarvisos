@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dmcp": {
+      "command": "/usr/local/bin/dmcp",
+      "args": ["serve"]
+    }
+  }
+}
