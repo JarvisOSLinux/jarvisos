@@ -52,6 +52,14 @@ install_arch() {
         python \
         libarchive \
         unzip \
+        dialog \
+        base-devel \
+        bc \
+        flex \
+        bison \
+        openssl \
+        libelf \
+        pahole \
         qemu-system-x86 \
         qemu-ui-gtk
 
@@ -95,6 +103,15 @@ install_fedora() {
         python3 \
         libarchive \
         unzip \
+        dialog \
+        gcc \
+        make \
+        bc \
+        flex \
+        bison \
+        openssl-devel \
+        elfutils-libelf-devel \
+        dwarves \
         rust \
         cargo \
         qemu-system-x86 \
@@ -113,6 +130,15 @@ install_fedora() {
         python3 \
         libarchive \
         unzip \
+        dialog \
+        gcc \
+        make \
+        bc \
+        flex \
+        bison \
+        openssl-devel \
+        elfutils-libelf-devel \
+        dwarves \
         rust \
         cargo
     echo -e "${GREEN}✓ Fedora prerequisites installed${NC}"
@@ -134,6 +160,14 @@ install_ubuntu() {
         python3 \
         libarchive-tools \
         unzip \
+        dialog \
+        build-essential \
+        bc \
+        flex \
+        bison \
+        libssl-dev \
+        libelf-dev \
+        dwarves \
         rustc \
         cargo \
         qemu-system-x86 \
@@ -151,6 +185,14 @@ install_ubuntu() {
         python3 \
         libarchive-tools \
         unzip \
+        dialog \
+        build-essential \
+        bc \
+        flex \
+        bison \
+        libssl-dev \
+        libelf-dev \
+        dwarves \
         rustc \
         cargo
     echo -e "${GREEN}✓ Ubuntu/Debian prerequisites installed${NC}"
@@ -171,6 +213,15 @@ install_opensuse() {
         python3 \
         libarchive-devel \
         unzip \
+        dialog \
+        gcc \
+        make \
+        bc \
+        flex \
+        bison \
+        libopenssl-devel \
+        libelf-devel \
+        dwarves \
         rust \
         cargo
     echo -e "${GREEN}✓ openSUSE prerequisites installed${NC}"

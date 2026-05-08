@@ -1233,65 +1233,67 @@ find_jarvis_source() {
 }
 
 # ── GPU vendor detection ──────────────────────────────────────────────────
-# Returns: "nvidia", "amd", or "cpu"
+# Returns: "nvidia", "amd", "intel-arc", or "cpu"
 _detect_gpu_vendor() {
     if lspci 2>/dev/null | grep -qi 'nvidia' || \
        lsmod 2>/dev/null | grep -q '^nvidia '; then
         echo "nvidia"; return
     fi
-    if lsmod 2>/dev/null | grep -q '^amdgpu '; then
+    if lsmod 2>/dev/null | grep -q '^amdgpu ' || \
+       lspci 2>/dev/null | grep -qi 'radeon\|amdgpu\|Advanced Micro Devices.*Navi\|Advanced Micro Devices.*Ellesmere\|Advanced Micro Devices.*Polaris'; then
         echo "amd"; return
     fi
-    if lspci 2>/dev/null | grep -qi 'radeon\|amdgpu'; then
-        echo "amd"; return
+    if lspci 2>/dev/null | grep -qi 'Intel.*Arc\|Arc.*Graphics\|Intel.*Alchemist\|Intel.*Battlemage'; then
+        echo "intel-arc"; return
     fi
     echo "cpu"
 }
 
-# ── Install Ollama with GPU-appropriate binary ────────────────────────────
+# ── Install Ollama via pacman with GPU-appropriate variant and drivers ────
 _install_ollama_gpu() {
     local gpu; gpu=$(_detect_gpu_vendor)
-    local arch; arch=$(uname -m)
-    info "GPU detected: ${gpu} — installing Ollama accordingly"
+    info "GPU detected: ${gpu} — selecting Ollama variant"
 
     case "${gpu}" in
         nvidia)
-            # install.sh auto-detects CUDA via nvidia-smi and installs libs
-            if curl -fsSL https://ollama.com/install.sh | sh; then
-                ok "Ollama installed with NVIDIA CUDA support"
-            else
-                warn "Ollama CUDA install failed — falling back to CPU binary"
-                local _url="https://ollama.com/download/ollama-linux-amd64"
-                [ "${arch}" = "aarch64" ] && _url="https://ollama.com/download/ollama-linux-arm64"
-                curl -fsSL -o /usr/local/bin/ollama "${_url}" && chmod +x /usr/local/bin/ollama || true
-            fi
+            info "Installing ollama-cuda + NVIDIA drivers + CUDA..."
+            pacman -S --noconfirm --needed \
+                ollama-cuda \
+                nvidia-dkms \
+                nvidia-utils \
+                dkms \
+                cuda \
+                || warn "Some NVIDIA/CUDA packages failed — check AUR or driver availability"
+            ok "Ollama installed with NVIDIA CUDA support"
             ;;
         amd)
-            if [ "${arch}" = "x86_64" ]; then
-                if curl -fsSL -o /usr/local/bin/ollama \
-                        https://ollama.com/download/ollama-linux-amd64-rocm; then
-                    chmod +x /usr/local/bin/ollama
-                    ok "Ollama installed with AMD ROCm support"
-                else
-                    warn "ROCm binary download failed — falling back to install.sh"
-                    curl -fsSL https://ollama.com/install.sh | sh || true
-                fi
-            else
-                curl -fsSL https://ollama.com/install.sh | sh || true
-            fi
-            # Grant ollama service user access to GPU render/DRI devices
+            info "Installing ollama-rocm + ROCm runtime..."
+            pacman -S --noconfirm --needed \
+                ollama-rocm \
+                rocm-hip-runtime \
+                rocm-opencl-runtime \
+                rocm-device-libs \
+                || warn "Some ROCm packages failed — check repo availability"
             getent group render >/dev/null 2>&1 && usermod -aG render ollama 2>/dev/null || true
             usermod -aG video ollama 2>/dev/null || true
+            ok "Ollama installed with AMD ROCm support"
+            ;;
+        intel-arc)
+            info "Installing ollama-vulkan + Intel Arc compute runtime..."
+            pacman -S --noconfirm --needed \
+                ollama-vulkan \
+                vulkan-intel \
+                intel-compute-runtime \
+                level-zero-loader \
+                intel-media-driver \
+                || warn "Some Intel Arc packages failed — check repo availability"
+            ok "Ollama installed with Intel Arc Vulkan support"
             ;;
         cpu|*)
-            local _url="https://ollama.com/download/ollama-linux-amd64"
-            [ "${arch}" = "aarch64" ] && _url="https://ollama.com/download/ollama-linux-arm64"
-            if curl -fsSL -o /usr/local/bin/ollama "${_url}"; then
-                chmod +x /usr/local/bin/ollama
-                ok "Ollama installed (CPU mode)"
-            else
-                warn "Ollama download failed — install manually: curl -fsSL https://ollama.com/install.sh | sh"
-            fi
+            info "No dedicated GPU detected — installing ollama (CPU mode)..."
+            pacman -S --noconfirm --needed ollama \
+                || warn "ollama install failed"
+            ok "Ollama installed (CPU mode)"
             ;;
     esac
 }
@@ -1304,6 +1306,23 @@ install_packages_mode() {
         exec sudo bash "${BASH_SOURCE[0]}" "${OVERLAY_MODE:---install-packages}"
     fi
     detect_arch_based
+
+    # ── Ensure all host tools needed for this install are present ────────
+    # Runs before anything else — including dialog — so missing tools never
+    # cause a silent failure mid-install. pacman -Sy first so the DB is
+    # fresh enough to resolve packages on a minimal/fresh system.
+    echo "Syncing package database and installing required host tools..."
+    pacman -Sy --noconfirm --quiet 2>&1 | tail -1 || true
+    pacman -S --noconfirm --needed \
+        dialog \
+        base-devel \
+        bc \
+        flex \
+        bison \
+        openssl \
+        libelf \
+        pahole \
+        || echo "Warning: some host tool packages failed to install — continuing"
 
     local distro_name
     distro_name=$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null \
@@ -1362,7 +1381,8 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
 
     # ── linux-jarvisos custom kernel ─────────────────────────────────────
     # Install alongside the existing kernel — does not remove it.
-    # Looks for pre-built packages first, then offers to build from source.
+    # Looks for pre-built packages first, then builds from source.
+    # Set SKIP_BUILD_KERNEL=1 to skip the makepkg build step entirely.
     info "Installing linux-jarvisos custom kernel..."
     _install_linux_jarvisos() {
         # 1. Already installed?
@@ -1371,56 +1391,139 @@ Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
             return 0
         fi
 
-        # 2. Pre-built package nearby — check multiple candidate locations
         local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        local _pkg_dir="" _cand
-        for _cand in \
-            "/opt/jarvis-kernel-pkg" \
-            "${_script_dir}/../../build/kernel-pkg" \
-            "${_script_dir}/../build/kernel-pkg"; do
-            if [ -d "${_cand}" ] && \
-               find "${_cand}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-                   ! -name 'linux-jarvisos-headers-*' -quit 2>/dev/null | grep -q .; then
-                _pkg_dir="${_cand}"; break
-            fi
-        done
-        local _pkg="" _hdr=""
-        if [ -n "${_pkg_dir}" ]; then
-            _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-                        ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
-                        | sort -V | tail -1 || true)
-            _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
-                        2>/dev/null | sort -V | tail -1 || true)
-        fi
+        local _project_root; _project_root="$(cd "${_script_dir}/../.." && pwd)"
+        local _kernel_src="${_project_root}/linux-jarvisos"
+        local _pkgbuild_dir="${_project_root}/packages/linux-jarvisos"
+        local _pkg_dest="${_project_root}/build/kernel-pkg"
 
-        if [ -n "${_pkg}" ] && [ -n "${_hdr}" ]; then
-            info "Found pre-built packages: $(basename "${_pkg}")"
+        # Helper: find directory containing pre-built packages
+        _kjf_find_dir() {
+            local _d
+            for _d in "/opt/jarvis-kernel-pkg" "${_pkg_dest}" \
+                      "${_project_root}/build/kernel-pkg"; do
+                if [ -d "${_d}" ] && \
+                   find "${_d}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+                       ! -name 'linux-jarvisos-headers-*' -quit 2>/dev/null | grep -q .; then
+                    echo "${_d}"; return 0
+                fi
+            done
+            return 1
+        }
+
+        # Helper: install kernel + headers from a package directory
+        _kjf_install_from_dir() {
+            local _d="$1" _pkg _hdr
+            _pkg=$(find "${_d}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
+                        ! -name 'linux-jarvisos-headers-*' 2>/dev/null | sort -V | tail -1)
+            _hdr=$(find "${_d}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
+                        2>/dev/null | sort -V | tail -1)
+            [ -n "${_pkg}" ] && [ -n "${_hdr}" ] || return 1
+            info "Installing: $(basename "${_pkg}")"
             pacman -U --noconfirm "${_pkg}" "${_hdr}" \
                 && ok "linux-jarvisos installed from pre-built packages" && return 0
-            warn "Pre-built package install failed — falling through to build from source"
+            warn "Pre-built package install failed"
+            return 1
+        }
+
+        # 2. Try pre-built packages first
+        local _found_dir
+        if _found_dir=$(_kjf_find_dir); then
+            _kjf_install_from_dir "${_found_dir}" && return 0
         fi
 
-        # 3. Build from source if linux-jarvisos submodule is available
-        local _kernel_src="${_script_dir}/../../linux-jarvisos"
-        local _build_script="${_script_dir}/../../scripts/03b-build-kernel.sh"
-        if [ -f "${_kernel_src}/Makefile" ] && [ -f "${_build_script}" ]; then
-            info "Building linux-jarvisos from source (may take 20-60 min)..."
-            if command -v makepkg >/dev/null 2>&1; then
-                local _scripts_dir; _scripts_dir="$(dirname "${_build_script}")"
-                (cd "${_scripts_dir}" && bash "${_build_script}" --host-install) \
-                    && ok "linux-jarvisos built and installed from source" && return 0
-                warn "linux-jarvisos build failed"
-            else
-                warn "makepkg not found — cannot build linux-jarvisos on this system"
+        # 3. SKIP_BUILD_KERNEL=1 — no build, warn and continue
+        if [[ "${SKIP_BUILD_KERNEL:-0}" == "1" ]]; then
+            warn "SKIP_BUILD_KERNEL=1 set and no pre-built packages found — skipping kernel build"
+            warn "linux-jarvisos not installed. JARVIS kernel features (/dev/jarvis, policy engine,"
+            warn "sysmon sysfs) will be unavailable. The JARVIS AI stack runs on the stock kernel."
+            return 0
+        fi
+
+        # 4. Build from source
+        if [ ! -f "${_kernel_src}/Makefile" ]; then
+            warn "linux-jarvisos submodule not initialized — ${_kernel_src}/Makefile missing"
+            warn "Run: git submodule update --init linux-jarvisos"
+            warn "linux-jarvisos not installed. JARVIS kernel features unavailable."
+            return 0
+        fi
+        if [ ! -f "${_pkgbuild_dir}/PKGBUILD" ]; then
+            warn "PKGBUILD missing at ${_pkgbuild_dir}/PKGBUILD"
+            warn "linux-jarvisos not installed. JARVIS kernel features unavailable."
+            return 0
+        fi
+        if ! command -v makepkg >/dev/null 2>&1; then
+            warn "makepkg not found — cannot build linux-jarvisos on this system"
+            warn "linux-jarvisos not installed. JARVIS kernel features unavailable."
+            return 0
+        fi
+
+        # Check build tools
+        local _missing=()
+        for _tool in make gcc bc flex bison perl; do
+            command -v "${_tool}" >/dev/null 2>&1 || _missing+=("${_tool}")
+        done
+        if ! pkg-config --exists openssl 2>/dev/null \
+           && [ ! -f /usr/include/openssl/ssl.h ]; then
+            _missing+=("openssl")
+        fi
+        if ! pkg-config --exists libelf 2>/dev/null \
+           && [ ! -f /usr/include/libelf.h ] \
+           && [ ! -f /usr/include/gelf.h ]; then
+            _missing+=("libelf")
+        fi
+        if [ ${#_missing[@]} -gt 0 ]; then
+            warn "Missing kernel build tools: ${_missing[*]}"
+            warn "Install: sudo pacman -S base-devel bc flex bison openssl libelf pahole"
+            warn "Then re-run: sudo bash jarvis-install --overlay"
+            return 0
+        fi
+
+        info "Building linux-jarvisos from source (20-60 min first run)..."
+
+        # Remove stale .config if CONFIG_JARVIS absent — forces clean config from /proc/config.gz
+        if [ -f "${_kernel_src}/.config" ] && \
+           ! grep -q "^CONFIG_JARVIS=" "${_kernel_src}/.config" 2>/dev/null; then
+            warn "Stale .config missing CONFIG_JARVIS — removing for clean rebuild"
+            rm -f "${_kernel_src}/.config"
+        fi
+
+        # makepkg refuses to run as root — drop privileges to SUDO_USER
+        local _build_user="${SUDO_USER:-$(logname 2>/dev/null || true)}"
+        local _makepkg_prefix=""
+        if [ "$(id -u)" -eq 0 ]; then
+            if [ -z "${_build_user}" ] || [ "${_build_user}" = "root" ]; then
+                warn "Running as root with no SUDO_USER — cannot invoke makepkg"
+                warn "Run as your regular user: sudo bash jarvis-install --overlay"
+                return 0
             fi
+            mkdir -p "${_pkg_dest}"
+            chown "${_build_user}" "${_pkg_dest}"
+            chown -R "${_build_user}" "${_pkgbuild_dir}"
+            chown -R "${_build_user}" "${_kernel_src}"
+            _makepkg_prefix="sudo -u ${_build_user}"
         fi
 
-        # 4. Not available — print instructions and continue
-        warn "linux-jarvisos not installed. JARVIS kernel features (/dev/jarvis, policy engine,"
-        warn "sysmon sysfs) will be unavailable. The JARVIS AI stack runs on the stock kernel."
-        warn "To install linux-jarvisos later:"
-        warn "  git clone --recursive https://github.com/JarvisOSLinux/linux-jarvisos linux-jarvisos"
-        warn "  bash scripts/03b-build-kernel.sh --host-install"
+        mkdir -p "${_pkg_dest}"
+        local _ncpu; _ncpu=$(nproc)
+
+        (
+            cd "${_pkgbuild_dir}"
+            ${_makepkg_prefix} env \
+                KERNEL_SRC="${_kernel_src}" \
+                PKGDEST="${_pkg_dest}" \
+                MAKEFLAGS="-j${_ncpu}" \
+                makepkg --nodeps --nocheck --skipinteg --force
+        ) || { warn "linux-jarvisos build failed — JARVIS kernel features unavailable"; return 0; }
+
+        ok "linux-jarvisos packages built"
+
+        # Install the freshly built packages
+        if _found_dir=$(_kjf_find_dir); then
+            _kjf_install_from_dir "${_found_dir}" && return 0
+        fi
+
+        warn "Build succeeded but packages not found in ${_pkg_dest}"
         return 0
     }
     _install_linux_jarvisos
@@ -1557,15 +1660,18 @@ EOF
         _install_ollama_gpu
     fi
 
-    # Ollama systemd service
+    # Ollama systemd service — pacman-installed variants provide this automatically;
+    # fallback only needed if pacman install failed or binary landed at non-standard path.
     if [ ! -f /usr/lib/systemd/system/ollama.service ]; then
-        cat > /usr/lib/systemd/system/ollama.service << 'OLLAMAEOF'
+        local _ollama_bin
+        _ollama_bin=$(command -v ollama 2>/dev/null || echo "/usr/bin/ollama")
+        cat > /usr/lib/systemd/system/ollama.service << OLLAMAEOF
 [Unit]
 Description=Ollama Service
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/ollama serve
+ExecStart=${_ollama_bin} serve
 User=ollama
 Group=ollama
 Restart=always

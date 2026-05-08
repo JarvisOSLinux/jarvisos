@@ -10,6 +10,13 @@ JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The
 2. **`Project-JARVIS/`** — AI daemon submodule (dispatch + dmcp + contextor)
 3. **`scripts/`** — ISO build pipeline that layers everything onto a base Arch ISO
 
+## Design Principles
+
+**Auto-install missing dependencies — never warn and bail.** Any package required by a build step, installer mode, or runtime must be installed automatically if not present. Do not warn the user that a tool is missing and exit — install it first, then proceed. This applies everywhere:
+- `jarvis-install.sh --overlay` / `--install-packages` — installs `dialog`, `base-devel`, `bc`, `flex`, `bison`, `openssl`, `libelf`, `pahole` at the top of `install_packages_mode()` before anything else runs
+- `scripts/00-install-prereq.sh` (`make prereq`) — installs all ISO build tools + kernel build tools for all supported distros (Arch, Fedora, Ubuntu, openSUSE)
+- Any new feature that needs a host tool: add it to both `jarvis-install.sh`'s dep block and `00-install-prereq.sh`
+
 ## Build Config
 
 `build.config` at the **project root** (not `scripts/`) is sourced by all scripts and the Makefile:
