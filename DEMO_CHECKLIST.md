@@ -6,10 +6,11 @@ Quick stand demos. Each block is ~1–2 min. Pick by audience depth.
 
 ## 0. Setup (before anyone arrives)
 
-- [ ] `./test-jarvis-ollama.sh` running in a visible terminal
+- [ ] JARVIS TUI running: `cd ~/jarvisos/Project-JARVIS && jarvis` (or `./test-jarvis-ollama.sh` for standalone agent)
 - [ ] `/dev/jarvis` present: `ls /dev/jarvis`
-- [ ] Sysmon sysfs readable: `cat /sys/class/misc/jarvis/sysmon/cpu_pct`
+- [ ] Sysmon sysfs readable: `cat /sys/class/misc/jarvis/sysmon/cpu_load`
 - [ ] KWallet unlocked (so ksshaskpass doesn't fail first try)
+- [ ] ksshaskpass installed: `which ksshaskpass` (needed for DANGEROUS tier sudo)
 - [ ] Brave API key present: `ls ~/.config/jarvis/brave_api_key`
 - [ ] Second terminal open for live kernel/policy output
 
@@ -21,8 +22,8 @@ Quick stand demos. Each block is ~1–2 min. Pick by audience depth.
 
 ```bash
 ls /dev/jarvis
-cat /sys/class/misc/jarvis/sysmon/cpu_pct
-cat /sys/class/misc/jarvis/sysmon/mem_avail_mb
+cat /sys/class/misc/jarvis/sysmon/cpu_load
+cat /sys/class/misc/jarvis/sysmon/mem_avail
 cat /sys/class/misc/jarvis/sysmon/thermal
 ```
 
@@ -170,7 +171,7 @@ What to highlight:
 ls -la /dev/jarvis
 
 # Sysfs metrics (live)
-watch -n1 cat /sys/class/misc/jarvis/sysmon/cpu_pct
+watch -n1 cat /sys/class/misc/jarvis/sysmon/cpu_load
 
 # Policy table
 ls /sys/class/misc/jarvis/policy/
