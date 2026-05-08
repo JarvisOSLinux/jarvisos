@@ -171,6 +171,9 @@ Rules:
               anything in the user's home directory, user-level daemons,
               reading most files, running scripts the user owns, git, curl,
               python, pip (in a venv), or any GUI application whatsoever.
+- Launching GUI apps: use `xdg-open <target>` — works for app binaries, file paths,
+  and URLs. xdg-open respects default app associations and the active display session.
+  Examples: `xdg-open firefox`, `xdg-open /path/to/file.pdf`, `xdg-open https://...`
 - Multi-step tasks: put each step as a separate object in the commands array.
 - For greetings/questions about yourself: one SAFE echo command with your answer.
 - Never invent flags that do not exist in the real command.

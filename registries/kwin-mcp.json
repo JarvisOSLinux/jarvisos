@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "updated": "2026-05-08T00:00:00Z",
+  "servers": [
+    {
+      "id": "com.github.isac322.kwin-mcp",
+      "name": "kwin-mcp",
+      "summary": "KDE Plasma 6 Wayland desktop automation — 30 tools: app launch, window management, mouse, keyboard, touch, clipboard, screenshots, accessibility tree, D-Bus",
+      "version": "0.7.0",
+      "scope": "user",
+      "author": "isac322",
+      "homepage": "https://github.com/isac322/kwin-mcp",
+      "icon": "preferences-system-windows",
+      "keywords": ["kde", "wayland", "plasma", "desktop", "automation", "app-launch", "window", "screenshot", "xdg", "launch", "gui", "kwin"],
+      "capabilities": [
+        "app-launching",
+        "window-management",
+        "mouse-control",
+        "keyboard-control",
+        "touch-control",
+        "clipboard",
+        "screenshots",
+        "accessibility",
+        "dbus"
+      ],
+      "transports": [
+        {
+          "type": "stdio",
+          "command": "uvx",
+          "args": ["kwin-mcp"],
+          "description": "KDE Wayland desktop automation via uvx (no install step needed)"
+        }
+      ],
+      "tools": [
+        {"name": "launch_app", "description": "Spawn applications within the KDE session"},
+        {"name": "list_windows", "description": "Enumerate accessible windows via AT-SPI2"},
+        {"name": "focus_window", "description": "Activate a window by name"},
+        {"name": "screenshot", "description": "Capture desktop or window screenshot"},
+        {"name": "mouse_move", "description": "Move mouse cursor to coordinates"},
+        {"name": "mouse_click", "description": "Click mouse button at position"},
+        {"name": "mouse_scroll", "description": "Scroll at position"},
+        {"name": "mouse_drag", "description": "Drag from one position to another"},
+        {"name": "mouse_position", "description": "Get current cursor position"},
+        {"name": "mouse_button", "description": "Press/release mouse button"},
+        {"name": "key_press", "description": "Press a key by name"},
+        {"name": "key_type", "description": "Type a string via keyboard input"},
+        {"name": "key_down", "description": "Hold a key down"},
+        {"name": "key_up", "description": "Release a held key"},
+        {"name": "key_combo", "description": "Press a key combination (e.g. Ctrl+C)"},
+        {"name": "touch_tap", "description": "Simulate a touch tap"},
+        {"name": "touch_swipe", "description": "Simulate a touch swipe gesture"},
+        {"name": "touch_pinch", "description": "Simulate a pinch gesture"},
+        {"name": "touch_rotate", "description": "Simulate a rotation gesture"},
+        {"name": "clipboard_get", "description": "Read current clipboard contents"},
+        {"name": "clipboard_set", "description": "Write text to clipboard"},
+        {"name": "find_element", "description": "Find a UI element by label or role via accessibility tree"},
+        {"name": "get_accessibility_tree", "description": "Dump the AT-SPI2 accessibility tree for a window"},
+        {"name": "dbus_call", "description": "Call a D-Bus method"},
+        {"name": "get_app_log", "description": "Retrieve stdout/stderr log of a launched app"},
+        {"name": "get_wayland_info", "description": "Report active Wayland protocols and compositor info"}
+      ]
+    }
+  ]
+}
