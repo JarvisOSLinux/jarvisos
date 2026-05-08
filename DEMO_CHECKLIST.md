@@ -10,6 +10,7 @@ Quick stand demos. Each block is ~1–2 min. Pick by audience depth.
 - [ ] `/dev/jarvis` present: `ls /dev/jarvis`
 - [ ] Sysmon sysfs readable: `cat /sys/class/misc/jarvis/sysmon/cpu_pct`
 - [ ] KWallet unlocked (so ksshaskpass doesn't fail first try)
+- [ ] Brave API key present: `ls ~/.config/jarvis/brave_api_key`
 - [ ] Second terminal open for live kernel/policy output
 
 ---
@@ -92,7 +93,30 @@ What happens:
 
 ---
 
-## 5. App Launching with xdg-open (30 sec)
+## 5. Web Search (1 min)
+
+**Show JARVIS pulling live information from the web.**
+
+Prompts:
+```
+search for the latest Linux kernel version
+what is KDE Plasma 6
+search for Wayland compositor news
+```
+
+What happens:
+- ShellMCP `web_search` tool → Brave Search API (key in `~/.config/jarvis/brave_api_key`)
+- Returns titles, URLs, descriptions for top results
+- Falls back to SearXNG at trojanhoogle.pro if key missing
+
+What to highlight:
+- No API key committed to the repo — stored locally at `~/.config/jarvis/brave_api_key`, `chmod 600`
+- Classified as `SAFE` tier — read-only, no state change, no confirmation needed
+- Same policy gate applies: if someone asked JARVIS to "exfiltrate data", that's `FORBIDDEN`
+
+---
+
+## 6. App Launching with xdg-open (30 sec)
 
 **Show AI opening a GUI app — no sudo.**
 
@@ -233,3 +257,5 @@ All → `SAFE` tier → instant, no confirmation.
 | ksshaskpass not found | `sudo pacman -S ksshaskpass` |
 | dmcp not found | `/usr/local/bin/dmcp` — check PATH |
 | xdg-open fails silently | Check `WAYLAND_DISPLAY` in env: `echo $WAYLAND_DISPLAY` |
+| Web search fails | Check Brave key: `cat ~/.config/jarvis/brave_api_key` — fallback is SearXNG at trojanhoogle.pro |
+| SearXNG fallback fails | Check network: `curl -s "https://trojanhoogle.pro/search?q=test&format=json" \| head -c 200` |
