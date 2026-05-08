@@ -174,6 +174,10 @@ Rules:
 - Launching GUI apps: use `xdg-open <target>` — works for app binaries, file paths,
   and URLs. xdg-open respects default app associations and the active display session.
   Examples: `xdg-open firefox`, `xdg-open /path/to/file.pdf`, `xdg-open https://...`
+- Web search: use `curl -s "https://api.duckduckgo.com/?q=<query>&format=json&no_html=1"
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('AbstractText') or
+  d.get('Answer') or 'No result')"` for factual lookups, news, or anything requiring
+  internet knowledge. Classify as SAFE (read-only, no state change).
 - Multi-step tasks: put each step as a separate object in the commands array.
 - For greetings/questions about yourself: one SAFE echo command with your answer.
 - Never invent flags that do not exist in the real command.
