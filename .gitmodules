@@ -8,9 +8,6 @@
 [submodule "dispatch"]
 	path = dispatch
 	url = git@github.com:YakupAtahanov/dispatch.git
-[submodule "cachyos-calamares"]
-	path = cachyos-calamares
-	url = git@github.com:CachyOS/cachyos-calamares.git
 [submodule "linux-jarvisos"]
 	path = linux-jarvisos
 	url = git@github.com:JarvisOSLinux/linux-jarvisos.git
