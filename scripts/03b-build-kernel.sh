@@ -29,9 +29,11 @@ set -eo pipefail
 
 # ── Parse arguments ────────────────────────────────────────────────────────────
 HOST_INSTALL=0
+DOWNLOAD_RELEASE=0
 for arg in "$@"; do
     case "$arg" in
-        --host-install) HOST_INSTALL=1 ;;
+        --host-install)      HOST_INSTALL=1 ;;
+        --download-release)  DOWNLOAD_RELEASE=1 ;;
         *) echo "Unknown argument: $arg" >&2; exit 1 ;;
     esac
 done
@@ -218,6 +220,30 @@ echo -e "${BLUE}makepkg will run as: ${BUILD_USER}${NC}"
 # Export env vars consumed by the PKGBUILD
 export KERNEL_SRC
 export MAKEFLAGS="-j${NCPU}"
+
+# ── Download pre-built packages from GitHub Releases ─────────────────────────
+# Use --download-release or DOWNLOAD_KERNEL_RELEASE=1 to skip local build and
+# pull the latest .pkg.tar.zst artifacts from JarvisOSLinux/linux-jarvisos.
+# Requires gh CLI authenticated with repo scope.
+if [[ "${DOWNLOAD_RELEASE:-0}" == "1" || "${DOWNLOAD_KERNEL_RELEASE:-0}" == "1" ]]; then
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}Downloading kernel packages from GitHub Releases...${NC}"
+
+    if ! command -v gh &>/dev/null; then
+        echo -e "${RED}FATAL: gh CLI not found. Install it or build locally.${NC}" >&2
+        exit 1
+    fi
+
+    mkdir -p "${PKG_DEST}"
+    gh release download --repo JarvisOSLinux/linux-jarvisos \
+        --pattern "linux-jarvisos-*.pkg.tar.zst" \
+        --dir "${PKG_DEST}" \
+        --clobber
+
+    echo -e "${GREEN}✓ Kernel packages downloaded to ${PKG_DEST}${NC}"
+    echo ""
+    SKIP_KERNEL_BUILD=1
+fi
 
 # Allow skipping the kernel compilation when packages are already built.
 # Set SKIP_KERNEL_BUILD=1 to reuse existing packages in ${PKG_DEST} and jump
