@@ -1,0 +1,34 @@
+name: Sync Submodules
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [submodule-update]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update submodules to latest tracked branch
+        run: git submodule update --remote --merge
+
+      - name: Commit and push if changed
+        run: |
+          git diff --quiet && git diff --staged --quiet && echo "No changes" && exit 0
+          UPDATED=$(git submodule status | awk '{print $2}' | tr '\n' ' ')
+          git add .
+          git commit -m "chore: auto-bump submodules: ${UPDATED}[skip ci]"
+          git push
