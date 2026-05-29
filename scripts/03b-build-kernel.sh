@@ -82,12 +82,14 @@ echo ""
 # ── Prerequisite checks ───────────────────────────────────────────────────────
 echo -e "${BLUE}Checking build prerequisites...${NC}"
 
-# Kernel source must be present
-if [ ! -f "${KERNEL_SRC}/Makefile" ]; then
-    echo -e "${RED}FATAL: linux-jarvisos/ kernel source not found at ${KERNEL_SRC}${NC}" >&2
-    echo -e "${YELLOW}Ensure the linux-jarvisos submodule is initialized:${NC}"
-    echo -e "${YELLOW}  git submodule update --init linux-jarvisos${NC}"
-    exit 1
+# Kernel source must be present — skip check when downloading pre-built packages
+if [[ "${DOWNLOAD_RELEASE:-0}" != "1" && "${DOWNLOAD_KERNEL_RELEASE:-0}" != "1" ]]; then
+    if [ ! -f "${KERNEL_SRC}/Makefile" ]; then
+        echo -e "${RED}FATAL: linux-jarvisos/ kernel source not found at ${KERNEL_SRC}${NC}" >&2
+        echo -e "${YELLOW}Use --download-release to fetch pre-built packages, or init the submodule:${NC}"
+        echo -e "${YELLOW}  git submodule update --init linux-jarvisos${NC}"
+        exit 1
+    fi
 fi
 
 # PKGBUILD must be present

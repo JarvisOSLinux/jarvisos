@@ -24,7 +24,12 @@ SCRIPTS_DIR="${PROJECT_ROOT}${SCRIPTS_DIR}"
 BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 BUILD_DEPS_DIR="${PROJECT_ROOT}${BUILD_DEPS_DIR}"
-PROJECT_JARVIS="${PROJECT_ROOT}/Project-JARVIS"
+# Use submodule if initialized, otherwise auto-clone
+if [ -d "${PROJECT_ROOT}/Project-JARVIS" ] && [ -f "${PROJECT_ROOT}/Project-JARVIS/requirements.txt" ]; then
+    PROJECT_JARVIS="${PROJECT_ROOT}/Project-JARVIS"
+else
+    PROJECT_JARVIS="/tmp/jarvisos-Project-JARVIS"
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -45,11 +50,13 @@ if [ ! -d "${SQUASHFS_ROOTFS}/usr/bin" ] && [ ! -d "${SQUASHFS_ROOTFS}/bin" ]; t
     exit 1
 fi
 
-# Check if Project-JARVIS exists
-if [ ! -d "${PROJECT_JARVIS}" ]; then
-    echo -e "${RED}Error: Project-JARVIS not found at ${PROJECT_JARVIS}${NC}" >&2
-    echo -e "${YELLOW}Please ensure Project-JARVIS submodule is initialized${NC}"
-    exit 1
+# Auto-clone Project-JARVIS if submodule not initialized
+if [ ! -d "${PROJECT_JARVIS}" ] || [ ! -f "${PROJECT_JARVIS}/requirements.txt" ]; then
+    echo -e "${BLUE}Project-JARVIS submodule not found — cloning...${NC}"
+    git clone --depth 1 -b linux-integration-preparation \
+        https://github.com/YakupAtahanov/Project-JARVIS.git \
+        "${PROJECT_JARVIS}"
+    echo -e "${GREEN}✓ Project-JARVIS cloned${NC}"
 fi
 
 # Determine chroot command (distro-aware error messages via build-utils.sh)
@@ -335,27 +342,42 @@ echo -e "${GREEN}✓ JARVIS module verified successfully${NC}"
 
 DMCP_DIR="${PROJECT_ROOT}/dmcp"
 DMCP_BINARY_SRC="${DMCP_DIR}/target/release/dmcp"
+_DMCP_BINARY_READY=0
 
-echo -e "${BLUE}Building dmcp (MCP server manager)...${NC}"
+echo -e "${BLUE}Installing dmcp (MCP server manager)...${NC}"
 
-if [ ! -d "${DMCP_DIR}" ]; then
-    echo -e "${YELLOW}Warning: dmcp directory not found at ${DMCP_DIR} — skipping DMCP install${NC}"
-else
-    # Check Rust toolchain on host
-    if ! command -v cargo &>/dev/null; then
-        echo -e "${YELLOW}Warning: cargo not found on host — skipping dmcp build.${NC}"
-        echo -e "${YELLOW}Install Rust (https://rustup.rs/) and re-run to include dmcp.${NC}"
-    else
+# Path A: submodule present — build from source
+if [ -d "${DMCP_DIR}" ] && [ -f "${DMCP_DIR}/Cargo.toml" ]; then
+    if command -v cargo &>/dev/null; then
         (cd "${DMCP_DIR}" && cargo build --release 2>&1) || {
-            echo -e "${RED}ERROR: dmcp build failed${NC}" >&2
-            exit 1
+            echo -e "${RED}ERROR: dmcp build failed${NC}" >&2; exit 1
         }
+        [ -f "${DMCP_BINARY_SRC}" ] && _DMCP_BINARY_READY=1
+    else
+        echo -e "${YELLOW}Warning: cargo not found — falling back to release download${NC}"
+    fi
+fi
 
-        if [ ! -f "${DMCP_BINARY_SRC}" ]; then
-            echo -e "${RED}ERROR: expected dmcp binary at ${DMCP_BINARY_SRC}${NC}" >&2
-            exit 1
+# Path B: no submodule or cargo missing — download pre-built binary from GitHub Releases
+if [ "${_DMCP_BINARY_READY}" = "0" ]; then
+    echo -e "${BLUE}Downloading dmcp binary from GitHub Releases...${NC}"
+    if ! command -v gh &>/dev/null; then
+        echo -e "${YELLOW}Warning: gh CLI not found — skipping dmcp install${NC}"
+    else
+        _DMCP_TMP=$(mktemp -d)
+        if gh release download --repo YakupAtahanov/dmcp \
+            --pattern "dmcp-linux-x86_64" \
+            --dir "${_DMCP_TMP}" --clobber 2>/dev/null; then
+            DMCP_BINARY_SRC="${_DMCP_TMP}/dmcp-linux-x86_64"
+            chmod +x "${DMCP_BINARY_SRC}"
+            _DMCP_BINARY_READY=1
+        else
+            echo -e "${YELLOW}Warning: dmcp release not found — skipping dmcp install${NC}"
         fi
+    fi
+fi
 
+if [ "${_DMCP_BINARY_READY}" = "1" ]; then
         echo -e "${BLUE}Installing dmcp binary to rootfs...${NC}"
         sudo cp "${DMCP_BINARY_SRC}" "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
         sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
@@ -400,43 +422,53 @@ DMCP_SVC_EOF
         sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/dmcp.service"
 
         echo -e "${GREEN}✓ dmcp installed (/usr/bin/dmcp + dmcp.service)${NC}"
-    fi
 fi
 # ---- end DMCP ---------------------------------------------------------------
 
 # ---- DISPATCH: build and install --------------------------------------------
-# dispatch is a Rust binary (signal-driven task orchestrator for MCP servers).
-# Built on the host like dmcp.
-
 DISPATCH_DIR="${PROJECT_ROOT}/dispatch"
 DISPATCH_BINARY_SRC="${DISPATCH_DIR}/target/release/dispatch"
+_DISPATCH_BINARY_READY=0
 
-echo -e "${BLUE}Building dispatch (MCP task orchestrator)...${NC}"
+echo -e "${BLUE}Installing dispatch (MCP task orchestrator)...${NC}"
 
-if [ ! -f "${DISPATCH_DIR}/Cargo.toml" ]; then
-    echo -e "${YELLOW}Warning: dispatch/Cargo.toml not found at ${DISPATCH_DIR} — skipping dispatch build${NC}"
-else
-    if ! command -v cargo &>/dev/null; then
-        echo -e "${YELLOW}Warning: cargo not found on host — skipping dispatch build.${NC}"
-        echo -e "${YELLOW}Install Rust (https://rustup.rs/) and re-run to include dispatch.${NC}"
-    else
+# Path A: submodule present — build from source
+if [ -f "${DISPATCH_DIR}/Cargo.toml" ]; then
+    if command -v cargo &>/dev/null; then
         (cd "${DISPATCH_DIR}" && cargo build --release 2>&1) || {
-            echo -e "${RED}ERROR: dispatch build failed${NC}" >&2
-            exit 1
+            echo -e "${RED}ERROR: dispatch build failed${NC}" >&2; exit 1
         }
-
-        if [ ! -f "${DISPATCH_BINARY_SRC}" ]; then
-            echo -e "${RED}ERROR: expected dispatch binary at ${DISPATCH_BINARY_SRC}${NC}" >&2
-            exit 1
-        fi
-
-        echo -e "${BLUE}Installing dispatch binary to rootfs...${NC}"
-        sudo cp "${DISPATCH_BINARY_SRC}" "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
-        sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
-        sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
-
-        echo -e "${GREEN}✓ dispatch installed (/usr/bin/dispatch)${NC}"
+        [ -f "${DISPATCH_BINARY_SRC}" ] && _DISPATCH_BINARY_READY=1
+    else
+        echo -e "${YELLOW}Warning: cargo not found — falling back to release download${NC}"
     fi
+fi
+
+# Path B: no submodule or cargo missing — download pre-built binary
+if [ "${_DISPATCH_BINARY_READY}" = "0" ]; then
+    echo -e "${BLUE}Downloading dispatch binary from GitHub Releases...${NC}"
+    if ! command -v gh &>/dev/null; then
+        echo -e "${YELLOW}Warning: gh CLI not found — skipping dispatch install${NC}"
+    else
+        _DISPATCH_TMP=$(mktemp -d)
+        if gh release download --repo YakupAtahanov/dispatch \
+            --pattern "dispatch-linux-x86_64" \
+            --dir "${_DISPATCH_TMP}" --clobber 2>/dev/null; then
+            DISPATCH_BINARY_SRC="${_DISPATCH_TMP}/dispatch-linux-x86_64"
+            chmod +x "${DISPATCH_BINARY_SRC}"
+            _DISPATCH_BINARY_READY=1
+        else
+            echo -e "${YELLOW}Warning: dispatch release not found — skipping dispatch install${NC}"
+        fi
+    fi
+fi
+
+if [ "${_DISPATCH_BINARY_READY}" = "1" ]; then
+    echo -e "${BLUE}Installing dispatch binary to rootfs...${NC}"
+    sudo cp "${DISPATCH_BINARY_SRC}" "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
+    sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
+    sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/dispatch"
+    echo -e "${GREEN}✓ dispatch installed (/usr/bin/dispatch)${NC}"
 fi
 # ---- end DISPATCH -----------------------------------------------------------
 
