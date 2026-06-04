@@ -39,7 +39,10 @@ prepare() {
     # what users expect from an Arch-based live ISO.
     #
     # Priority: /proc/config.gz > existing .config > x86_64_defconfig
-    if [[ -r /proc/config.gz ]]; then
+    if [[ -n "${JARVIS_CI_BUILD:-}" ]]; then
+        echo "  -> CI build: using x86_64_defconfig (host config skipped)"
+        make x86_64_defconfig LOCALVERSION="$_localversion"
+    elif [[ -r /proc/config.gz ]]; then
         echo "  -> Extracting host kernel config from /proc/config.gz..."
         zcat /proc/config.gz > .config
     elif [[ -f .config ]]; then
