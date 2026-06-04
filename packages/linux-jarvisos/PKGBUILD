@@ -57,18 +57,6 @@ prepare() {
     # drop symbols that no longer exist in this source tree)
     make olddefconfig LOCALVERSION="$_localversion"
 
-    # ── Disable host-config features with API incompatibilities ───────────────
-    # io_uring zero-copy RX: struct io_zcrx_ifq layout differs between host
-    # kernel and this tree.
-    scripts/config --disable CONFIG_IO_URING_ZCRX
-    # sched_ext: struct scx_rq and related APIs diverged between host kernel
-    # and this tree; ext.c is gated by this config so disabling avoids all
-    # ext.c/ext_idle.c build failures.
-    scripts/config --disable CONFIG_SCHED_CLASS_EXT
-    # kexec handover: kho_retrieve_subtree signature and KHO_FDT_SUB_TREE_PROP_NAME
-    # differ between host kernel and this tree.
-    scripts/config --disable CONFIG_KEXEC_HANDOVER
-
     echo "  -> Applying base kernel config options..."
 
     # EFI stub — REQUIRED for systemd-boot EFISTUB to load this kernel on UEFI.
@@ -200,6 +188,13 @@ prepare() {
     # Done AFTER merge + olddefconfig so nothing can silently drop them.
     # CONFIG_MISC_DEVICES is the direct dependency of CONFIG_JARVIS — it must be
     # enabled first or olddefconfig will discard CONFIG_JARVIS.
+    # ── Disable features with API incompatibilities (enforced last, after all olddefconfig) ──
+    # Must run here so the second make olddefconfig cannot re-enable them.
+    scripts/config --disable CONFIG_IO_URING_ZCRX      # struct io_zcrx_ifq API mismatch
+    scripts/config --disable CONFIG_SCHED_CLASS_EXT    # struct scx_rq API mismatch
+    scripts/config --disable CONFIG_KEXEC_HANDOVER     # kho_retrieve_subtree signature mismatch
+    scripts/config --disable CONFIG_RUST               # Rust tracepoint infra broken in this tree
+
     echo "  -> Enforcing JARVIS driver config..."
     scripts/config --disable CONFIG_LOCALVERSION_AUTO
     scripts/config --enable CONFIG_SYSFS
