@@ -92,6 +92,7 @@ jobs:
             set -euo pipefail
             export KERNEL_SRC=/home/builder/linux-jarvisos
             export PKGDEST=/home/builder/pkgs
+            export JARVIS_CI_BUILD=1
             cd /home/builder/packages/linux-jarvisos
             makepkg -s --noconfirm
           "
