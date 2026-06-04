@@ -59,8 +59,12 @@ prepare() {
 
     # ── Disable host-config features with API incompatibilities ───────────────
     # io_uring zero-copy RX: struct io_zcrx_ifq layout differs between host
-    # kernel and this tree — disable to avoid build failure.
+    # kernel and this tree.
     scripts/config --disable CONFIG_IO_URING_ZCRX
+    # sched_ext: struct scx_rq and related APIs diverged between host kernel
+    # and this tree; ext.c is gated by this config so disabling avoids all
+    # ext.c/ext_idle.c build failures.
+    scripts/config --disable CONFIG_SCHED_CLASS_EXT
 
     echo "  -> Applying base kernel config options..."
 
