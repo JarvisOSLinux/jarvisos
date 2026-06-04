@@ -1,0 +1,7 @@
+# Pinned subsystem commits — updated automatically by track-subsystems.yml
+# when any subsystem repo pushes to its default branch.
+# ISO build pipeline reads this to clone the correct revision of each component.
+dispatch=8363f46dc9d7d076677ac29768c32b6ff39687fe
+dmcp=b33c7ecb6d5b40ef7c1b6ad983fb616631510c7d
+Project-JARVIS=14552c62060eb2fc8d13dc37b199456e74ff181d
+linux-jarvisos=3b8241f4609430f36e862ef1f37bd761432be91c

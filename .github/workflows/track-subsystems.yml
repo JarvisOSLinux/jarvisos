@@ -1,0 +1,63 @@
+name: Track Subsystem Updates
+
+on:
+  repository_dispatch:
+    types: [subsystem-update]
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Subsystem repo name (e.g. dispatch)'
+        required: true
+      sha:
+        description: 'Commit SHA to record'
+        required: true
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update versions.lock
+        env:
+          REPO: ${{ github.event.client_payload.repo || inputs.repo }}
+          SHA: ${{ github.event.client_payload.sha || inputs.sha }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, re
+
+          repo = os.environ['REPO']
+          sha  = os.environ['SHA']
+
+          with open('versions.lock', 'r') as f:
+              content = f.read()
+
+          pattern = re.compile(f'^{re.escape(repo)}=.*$', re.MULTILINE)
+          if pattern.search(content):
+              content = pattern.sub(f'{repo}={sha}', content)
+          else:
+              content = content.rstrip('\n') + f'\n{repo}={sha}\n'
+
+          with open('versions.lock', 'w') as f:
+              f.write(content)
+
+          print(f'Updated {repo} -> {sha[:7]}')
+          PYEOF
+
+      - name: Commit if changed
+        env:
+          REPO: ${{ github.event.client_payload.repo || inputs.repo }}
+          SHA: ${{ github.event.client_payload.sha || inputs.sha }}
+        run: |
+          git diff --quiet && echo "No change" && exit 0
+          git add versions.lock
+          git commit -m "chore: track ${REPO}@${SHA:0:7} [skip ci]"
+          git pull --rebase
+          git push
