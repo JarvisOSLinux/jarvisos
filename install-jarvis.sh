@@ -163,6 +163,11 @@ else
     KERNEL_SCRIPT="${REPO_ROOT}/build-kernel.sh"
     [[ -f "$KERNEL_SCRIPT" ]] || die "build-kernel.sh not found at ${KERNEL_SCRIPT}"
 
+    # Ensure kernel-pkg dir exists and is writable by current user
+    # (may be root-owned from a previous failed sudo run)
+    mkdir -p "${REPO_ROOT}/kernel-pkg"
+    sudo chown "${REAL_USER}:${REAL_USER}" "${REPO_ROOT}/kernel-pkg"
+
     if [[ -f /boot/vmlinuz-linux-jarvisos ]]; then
         ok "linux-jarvisos already installed"
     else
