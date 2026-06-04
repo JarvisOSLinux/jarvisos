@@ -20,6 +20,13 @@ PKGBUILD_DIR="${REPO_ROOT}/packages/linux-jarvisos"
 PKG_DEST="${REPO_ROOT}/kernel-pkg"
 LOCALVERSION="-jarvisos"
 
+# Always use x86_64_defconfig as the base config instead of /proc/config.gz.
+# The host kernel (e.g. CachyOS 7.1-rc) has newer APIs that are incompatible
+# with the linux-jarvisos 7.0.x source tree. The PKGBUILD re-enables all
+# required features (BTRFS, AMDGPU, Nouveau, USB, WiFi, etc.) on top of
+# defconfig, so the resulting kernel is fully functional.
+export JARVIS_CI_BUILD=1
+
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 BLU='\033[0;34m'; GRN='\033[0;32m'; YEL='\033[1;33m'
 RED='\033[0;31m'; PRP='\033[0;35m'; BOLD='\033[1m'; NC='\033[0m'
