@@ -65,6 +65,9 @@ prepare() {
     # and this tree; ext.c is gated by this config so disabling avoids all
     # ext.c/ext_idle.c build failures.
     scripts/config --disable CONFIG_SCHED_CLASS_EXT
+    # kexec handover: kho_retrieve_subtree signature and KHO_FDT_SUB_TREE_PROP_NAME
+    # differ between host kernel and this tree.
+    scripts/config --disable CONFIG_KEXEC_HANDOVER
 
     echo "  -> Applying base kernel config options..."
 
