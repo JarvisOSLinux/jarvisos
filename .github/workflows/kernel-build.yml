@@ -1,0 +1,114 @@
+name: kernel-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - pre-deeptech
+    paths:
+      - 'linux-jarvisos/**'
+      - 'packages/linux-jarvisos/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      LINODE_CLI_TOKEN: ${{ secrets.LINODE_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install tools
+        run: |
+          pip install linode-cli
+          sudo apt-get install -y rsync jq
+
+      - name: Create Linode
+        id: linode
+        run: |
+          RESULT=$(linode-cli linodes create \
+            --type g6-standard-4 \
+            --region us-east \
+            --image linode/arch \
+            --root_pass "${{ secrets.LINODE_ROOT_PASS }}" \
+            --authorized_keys "${{ secrets.LINODE_SSH_PUBKEY }}" \
+            --label jarvisos-build-${{ github.run_id }} \
+            --json)
+          echo "id=$(echo "$RESULT" | jq -r '.[0].id')" >> "$GITHUB_OUTPUT"
+          echo "ip=$(echo "$RESULT" | jq -r '.[0].ipv4[0]')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.LINODE_SSH_PRIVKEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf 'StrictHostKeyChecking no\nUserKnownHostsFile /dev/null\n' >> ~/.ssh/config
+
+      - name: Wait for SSH
+        run: |
+          IP="${{ steps.linode.outputs.ip }}"
+          for i in $(seq 1 40); do
+            ssh -o ConnectTimeout=5 root@"$IP" echo ok 2>/dev/null && break
+            echo "Attempt $i/40..."
+            sleep 15
+          done
+
+      - name: Bootstrap Arch build env
+        run: |
+          ssh root@"${{ steps.linode.outputs.ip }}" bash -s << 'ENDSSH'
+          set -euo pipefail
+          pacman -Sy --noconfirm --needed \
+            base-devel bc flex bison openssl libelf pahole \
+            cpio gettext perl python tar xz zstd rsync
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          install -d -o builder -g builder /home/builder/linux-jarvisos
+          install -d -o builder -g builder /home/builder/packages/linux-jarvisos
+          install -d -o builder -g builder /home/builder/pkgs
+          ENDSSH
+
+      - name: Transfer source
+        run: |
+          IP="${{ steps.linode.outputs.ip }}"
+          rsync -az --exclude='.git' \
+            linux-jarvisos/ root@"$IP":/home/builder/linux-jarvisos/
+          rsync -az \
+            packages/linux-jarvisos/ root@"$IP":/home/builder/packages/linux-jarvisos/
+          ssh root@"$IP" chown -R builder:builder /home/builder/
+
+      - name: Build kernel
+        run: |
+          ssh root@"${{ steps.linode.outputs.ip }}" bash -s << 'ENDSSH'
+          set -euo pipefail
+          su - builder -c "
+            set -euo pipefail
+            export KERNEL_SRC=/home/builder/linux-jarvisos
+            export PKGDEST=/home/builder/pkgs
+            cd /home/builder/packages/linux-jarvisos
+            makepkg -s --noconfirm
+          "
+          ENDSSH
+
+      - name: Collect packages
+        run: |
+          mkdir -p artifacts
+          scp "root@${{ steps.linode.outputs.ip }}:/home/builder/pkgs/*.pkg.tar.zst" artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-jarvisos-${{ github.run_id }}
+          path: artifacts/*.pkg.tar.zst
+          retention-days: 14
+
+      - name: Delete Linode
+        if: always()
+        run: |
+          LINODE_ID="${{ steps.linode.outputs.id }}"
+          if [ -n "$LINODE_ID" ]; then
+            linode-cli linodes delete "$LINODE_ID"
+            echo "Deleted Linode $LINODE_ID"
+          fi
