@@ -39,6 +39,16 @@ JARVIS_GROUP="jarvis"
 PROJECT_JARVIS="${REPO_ROOT}/Project-JARVIS"
 UDEV_RULES="${REPO_ROOT}/packages/udev/99-jarvis.rules"
 
+# ── Colours ───────────────────────────────────────────────────────────────────
+BLU='\033[0;34m'; GRN='\033[0;32m'; YEL='\033[1;33m'
+RED='\033[0;31m'; PRP='\033[0;35m'; BOLD='\033[1m'; NC='\033[0m'
+
+hdr()  { echo -e "\n${BOLD}${BLU}━━━ $* ━━━${NC}"; }
+ok()   { echo -e "${GRN}✓${NC}  $*"; }
+warn() { echo -e "${YEL}⚠${NC}   $*"; }
+die()  { echo -e "${RED}[FATAL]${NC} $*" >&2; exit 1; }
+info() { echo -e "${BLU}  →${NC} $*"; }
+
 # ── Flags ─────────────────────────────────────────────────────────────────────
 DAEMON_ONLY=0
 NO_MODEL=0
@@ -56,32 +66,22 @@ for arg in "$@"; do
 done
 
 if (( DO_CLEAN )); then
-    echo -e "\n${BOLD}${YEL}━━━ Clean ━━━${NC}"
-    echo "  Removing kernel build cache..."
+    hdr "Clean"
+    info "Removing kernel build cache..."
     rm -rf "${REPO_ROOT}/kernel-pkg"
     if [[ -f "${REPO_ROOT}/linux-jarvisos/Makefile" ]]; then
         make -C "${REPO_ROOT}/linux-jarvisos" clean 2>/dev/null || true
         rm -f "${REPO_ROOT}/linux-jarvisos/.config" "${REPO_ROOT}/linux-jarvisos/.config.old"
     fi
-    echo "  Removing JARVIS daemon install..."
+    info "Removing JARVIS daemon install..."
     sudo rm -rf /usr/lib/jarvis /var/lib/jarvis/venv
-    echo "  Removing systemd service..."
+    info "Removing systemd service..."
     sudo systemctl stop jarvis.service 2>/dev/null || true
     sudo systemctl disable jarvis.service 2>/dev/null || true
     sudo rm -f /usr/lib/systemd/system/jarvis.service
     sudo systemctl daemon-reload 2>/dev/null || true
-    echo -e "${GRN}✓${NC}  Clean complete — reinstalling from scratch"
+    ok "Clean complete — reinstalling from scratch"
 fi
-
-# ── Colours ───────────────────────────────────────────────────────────────────
-BLU='\033[0;34m'; GRN='\033[0;32m'; YEL='\033[1;33m'
-RED='\033[0;31m'; PRP='\033[0;35m'; BOLD='\033[1m'; NC='\033[0m'
-
-hdr()  { echo -e "\n${BOLD}${BLU}━━━ $* ━━━${NC}"; }
-ok()   { echo -e "${GRN}✓${NC}  $*"; }
-warn() { echo -e "${YEL}⚠${NC}   $*"; }
-die()  { echo -e "${RED}[FATAL]${NC} $*" >&2; exit 1; }
-info() { echo -e "${BLU}  →${NC} $*"; }
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo -e "\n${BOLD}${PRP}"
