@@ -21,7 +21,7 @@ BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 BUILD_DEPS_DIR="${PROJECT_ROOT}${BUILD_DEPS_DIR}"
 PACKAGES_DIR="${PROJECT_ROOT}/packages"
-INSTALLER_SRC="${PACKAGES_DIR}/jarvis-installer/jarvis-install.sh"
+INSTALLER_SRC="${PROJECT_ROOT}/jarvis-install.sh"
 KERNEL_PKG_DIR="${PROJECT_ROOT}/build/kernel-pkg"
 
 RED='\033[0;31m'

@@ -2,7 +2,7 @@
 # Simple Makefile to orchestrate the step-by-step ISO build process
 
 # ── Locate project root and build.config ──────────────────────────────────────
-# This Makefile lives in scripts/.  Go up one level to reach the project root.
+# This Makefile lives in iso-build-scripts/.  Go up one level to reach the project root.
 _MKDIR       := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 PROJECT_ROOT := $(realpath $(_MKDIR)/..)
 _CFGFILE     := $(PROJECT_ROOT)/build.config

@@ -16,14 +16,14 @@
 # ============================================================================
 
 # PROJECT_ROOT: Absolute path to the JARVIS OS project root directory
-# This should be the directory containing the scripts/ folder
+# This should be the directory containing the iso-build-scripts/ folder
 # Example: /home/user/jarvisos or /path/to/jarvisos
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# SCRIPTS_DIR: Path to the scripts directory (relative to PROJECT_ROOT)
-# This is where all build scripts (01-extract-iso.sh, etc.) are located
-# Default: /scripts (relative to PROJECT_ROOT)
-SCRIPTS_DIR="/scripts"
+# SCRIPTS_DIR: Path to the ISO build scripts directory (relative to PROJECT_ROOT)
+# This is where all ISO build scripts (01-extract-iso.sh, etc.) are located
+# Default: /iso-build-scripts (relative to PROJECT_ROOT)
+SCRIPTS_DIR="/iso-build-scripts"
 
 # ============================================================================
 # BUILD DIRECTORIES
@@ -94,7 +94,7 @@ BUILD_LOG_FILE="/build/build.log"
 #   JARVIS_ISO_FILE="jarvisos-*-x86_64.iso"
 #
 # This would result in:
-#   - Scripts: /home/user/jarvisos/scripts/
+#   - Scripts: /home/user/jarvisos/iso-build-scripts/
 #   - Build dir: /home/user/jarvisos/build/
 #   - Dependencies: /home/user/jarvisos/build-deps/
 #   - ISO source: /home/user/jarvisos/build-deps/archlinux-x86_64.iso

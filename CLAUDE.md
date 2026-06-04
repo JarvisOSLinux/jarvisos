@@ -8,18 +8,18 @@ JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The
 
 1. **`linux-jarvisos/`** — kernel submodule with JARVIS drivers (`drivers/jarvis/`)
 2. **`Project-JARVIS/`** — AI daemon submodule (dispatch + dmcp + contextor)
-3. **`scripts/`** — ISO build pipeline that layers everything onto a base Arch ISO
+3. **`iso-build-scripts/`** — ISO build pipeline that layers everything onto a base Arch ISO
 
 ## Design Principles
 
 **Auto-install missing dependencies — never warn and bail.** Any package required by a build step, installer mode, or runtime must be installed automatically if not present. Do not warn the user that a tool is missing and exit — install it first, then proceed. This applies everywhere:
 - `jarvis-install.sh --overlay` / `--install-packages` — installs `dialog`, `base-devel`, `bc`, `flex`, `bison`, `openssl`, `libelf`, `pahole` at the top of `install_packages_mode()` before anything else runs
-- `scripts/00-install-prereq.sh` (`make prereq`) — installs all ISO build tools + kernel build tools for all supported distros (Arch, Fedora, Ubuntu, openSUSE)
+- `iso-build-scripts/00-install-prereq.sh` (`make prereq`) — installs all ISO build tools + kernel build tools for all supported distros (Arch, Fedora, Ubuntu, openSUSE)
 - Any new feature that needs a host tool: add it to both `jarvis-install.sh`'s dep block and `00-install-prereq.sh`
 
 ## Build Config
 
-`build.config` at the **project root** (not `scripts/`) is sourced by all scripts and the Makefile:
+`build.config` at the **project root** (not `iso-build-scripts/`) is sourced by all scripts and the Makefile:
 - `PROJECT_ROOT` — auto-detected via `dirname`; override only if needed
 - `ISO_FILE` — source ISO filename (currently `archlinux-x86_64.iso`); place file in `build-deps/`
 - `BUILD_DIR`, `BUILD_DEPS_DIR` — relative to `PROJECT_ROOT`
@@ -28,10 +28,10 @@ JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The
 
 ## Build Commands
 
-All ISO build commands run from `scripts/`:
+All ISO build commands run from `iso-build-scripts/`:
 
 ```bash
-cd scripts
+cd iso-build-scripts
 
 make prereq          # Install host build tools (detects Arch/Fedora/Ubuntu/openSUSE)
 make all             # Full build: steps 1–7 + 3b (prereq must be run first)
@@ -53,15 +53,15 @@ make JOBS=8 step3b   # Parallel kernel build (default: nproc)
 
 Kernel-only build (host install or package-only):
 ```bash
-bash scripts/03b-build-kernel.sh --host-install   # Build + install on running system
-bash scripts/03b-build-kernel.sh                  # Build packages only → build/kernel-pkg/
-SKIP_KERNEL_BUILD=1 bash scripts/03b-build-kernel.sh --host-install  # Skip recompile
+bash iso-build-scripts/03b-build-kernel.sh --host-install   # Build + install on running system
+bash iso-build-scripts/03b-build-kernel.sh                  # Build packages only → build/kernel-pkg/
+SKIP_KERNEL_BUILD=1 bash iso-build-scripts/03b-build-kernel.sh --host-install  # Skip recompile
 ```
 
 Test in QEMU:
 ```bash
-./scripts/booter.sh         # UEFI boot
-./scripts/booter.sh --bios  # BIOS boot
+./iso-build-scripts/booter.sh         # UEFI boot
+./iso-build-scripts/booter.sh --bios  # BIOS boot
 ```
 
 Standalone agent (no ISO needed):
@@ -106,7 +106,7 @@ PKGBUILD at `packages/linux-jarvisos/PKGBUILD` — reads `KERNEL_SRC` env var po
 
 Submodule tracks branch `linux-integration-preparation`. `dispatch/` and `dmcp/` also exist as separate top-level submodules (mirrors of what's inside `Project-JARVIS/`).
 
-### ISO Pipeline (`scripts/`)
+### ISO Pipeline (`iso-build-scripts/`)
 
 Steps are idempotent and can be resumed with `make rest`. Each numbered script (`01`–`07`) performs one phase; `03b-build-kernel.sh` runs between steps 3 and 4 and is the only step that requires `makepkg` on the host.
 

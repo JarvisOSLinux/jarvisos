@@ -12,9 +12,9 @@
 #   can boot linux-jarvisos directly from your bootloader.
 #
 # Usage:
-#   bash scripts/03b-build-kernel.sh              # ISO pipeline (default)
-#   bash scripts/03b-build-kernel.sh --host-install  # build + install on host
-#   SKIP_KERNEL_BUILD=1 bash scripts/03b-build-kernel.sh --host-install
+#   bash iso-build-scripts/03b-build-kernel.sh              # ISO pipeline (default)
+#   bash iso-build-scripts/03b-build-kernel.sh --host-install  # build + install on host
+#   SKIP_KERNEL_BUILD=1 bash iso-build-scripts/03b-build-kernel.sh --host-install
 #     # reuse already-built packages, just install on host
 #
 # Prerequisites (ISO mode): step 2 (rootfs extracted) + step 3 (packages + mkinitcpio.conf)
