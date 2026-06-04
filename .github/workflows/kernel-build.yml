@@ -19,7 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+
+      - name: Checkout linux-jarvisos submodule
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init linux-jarvisos
 
       - name: Install tools
         run: |
