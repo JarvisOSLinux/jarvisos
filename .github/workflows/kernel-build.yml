@@ -22,7 +22,9 @@ jobs:
           submodules: false
 
       - name: Checkout linux-jarvisos submodule
-        run: git submodule update --init linux-jarvisos
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init linux-jarvisos
 
       - name: Install tools
         run: |
