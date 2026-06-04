@@ -57,6 +57,11 @@ prepare() {
     # drop symbols that no longer exist in this source tree)
     make olddefconfig LOCALVERSION="$_localversion"
 
+    # ── Disable host-config features with API incompatibilities ───────────────
+    # io_uring zero-copy RX: struct io_zcrx_ifq layout differs between host
+    # kernel and this tree — disable to avoid build failure.
+    scripts/config --disable CONFIG_IO_URING_ZCRX
+
     echo "  -> Applying base kernel config options..."
 
     # EFI stub — REQUIRED for systemd-boot EFISTUB to load this kernel on UEFI.
