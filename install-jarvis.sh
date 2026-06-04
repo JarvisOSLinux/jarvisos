@@ -13,6 +13,7 @@
 #   ./install-jarvis.sh                    # Full install
 #   ./install-jarvis.sh --daemon-only      # Skip kernel install
 #   ./install-jarvis.sh --no-model         # Skip Ollama model pull
+#   ./install-jarvis.sh --clean            # Wipe build cache + reinstall everything
 #   JARVIS_MODEL=qwen3:14b ./install-jarvis.sh
 #
 # Supported distros:
@@ -41,16 +42,36 @@ UDEV_RULES="${REPO_ROOT}/packages/udev/99-jarvis.rules"
 # ── Flags ─────────────────────────────────────────────────────────────────────
 DAEMON_ONLY=0
 NO_MODEL=0
+DO_CLEAN=0
 JARVIS_MODEL="${JARVIS_MODEL:-}"
 
 for arg in "$@"; do
     case "$arg" in
         --daemon-only) DAEMON_ONLY=1 ;;
         --no-model)    NO_MODEL=1 ;;
+        --clean|-c)    DO_CLEAN=1 ;;
         --help|-h)     sed -n '2,15p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "Unknown argument: $arg  (use --help)" >&2; exit 1 ;;
     esac
 done
+
+if (( DO_CLEAN )); then
+    echo -e "\n${BOLD}${YEL}━━━ Clean ━━━${NC}"
+    echo "  Removing kernel build cache..."
+    rm -rf "${REPO_ROOT}/kernel-pkg"
+    if [[ -f "${REPO_ROOT}/linux-jarvisos/Makefile" ]]; then
+        make -C "${REPO_ROOT}/linux-jarvisos" clean 2>/dev/null || true
+        rm -f "${REPO_ROOT}/linux-jarvisos/.config" "${REPO_ROOT}/linux-jarvisos/.config.old"
+    fi
+    echo "  Removing JARVIS daemon install..."
+    sudo rm -rf /usr/lib/jarvis /var/lib/jarvis/venv
+    echo "  Removing systemd service..."
+    sudo systemctl stop jarvis.service 2>/dev/null || true
+    sudo systemctl disable jarvis.service 2>/dev/null || true
+    sudo rm -f /usr/lib/systemd/system/jarvis.service
+    sudo systemctl daemon-reload 2>/dev/null || true
+    echo -e "${GRN}✓${NC}  Clean complete — reinstalling from scratch"
+fi
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 BLU='\033[0;34m'; GRN='\033[0;32m'; YEL='\033[1;33m'

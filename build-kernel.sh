@@ -5,6 +5,7 @@
 #   ./build-kernel.sh                        # Build packages only → ./kernel-pkg/
 #   ./build-kernel.sh --install              # Build + install on this host via pacman
 #   ./build-kernel.sh --install --force      # Force rebuild even if packages exist
+#   ./build-kernel.sh --clean --install      # Wipe cache + full rebuild + install
 #   SKIP_BUILD=1 ./build-kernel.sh --install # Reuse existing packages, just install
 #
 # Prerequisites:
@@ -39,11 +40,13 @@ info() { echo -e "${BLU}  →${NC} $*"; }
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 DO_INSTALL=0
+DO_CLEAN=0
 FORCE_FLAG=""
 for arg in "$@"; do
     case "$arg" in
         --install|-i) DO_INSTALL=1 ;;
         --force|-f)   FORCE_FLAG="--force" ;;
+        --clean|-c)   DO_CLEAN=1 ;;
         --help|-h)
             sed -n '2,12p' "$0" | sed 's/^# \?//'
             exit 0
@@ -51,6 +54,18 @@ for arg in "$@"; do
         *) die "Unknown argument: $arg  (use --help)" ;;
     esac
 done
+
+if (( DO_CLEAN )); then
+    hdr "Clean"
+    info "Removing built packages: ${PKG_DEST}/"
+    rm -rf "${PKG_DEST}"
+    info "Cleaning kernel build artifacts..."
+    if [[ -f "${KERNEL_SRC}/Makefile" ]]; then
+        make -C "${KERNEL_SRC}" clean 2>/dev/null || true
+        rm -f "${KERNEL_SRC}/.config" "${KERNEL_SRC}/.config.old"
+    fi
+    ok "Clean complete — rebuilding from scratch"
+fi
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo -e "\n${BOLD}${PRP}"
