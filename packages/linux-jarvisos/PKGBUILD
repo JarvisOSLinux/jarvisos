@@ -124,6 +124,9 @@ prepare() {
     # Device mapper (LVM, LUKS encryption)
     scripts/config --enable CONFIG_BLK_DEV_DM
     scripts/config --module CONFIG_DM_CRYPT
+    scripts/config --module CONFIG_DM_INTEGRITY
+    scripts/config --module CONFIG_CRYPTO_LZ4
+    scripts/config --module CONFIG_CRYPTO_LZ4HC
 
     # Graphics (KMS for early boot display)
     scripts/config --enable CONFIG_DRM
