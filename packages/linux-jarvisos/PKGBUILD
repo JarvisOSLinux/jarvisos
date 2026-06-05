@@ -124,9 +124,6 @@ prepare() {
     # Device mapper (LVM, LUKS encryption)
     scripts/config --enable CONFIG_BLK_DEV_DM
     scripts/config --module CONFIG_DM_CRYPT
-    scripts/config --module CONFIG_DM_INTEGRITY
-    scripts/config --module CONFIG_CRYPTO_LZ4
-    scripts/config --module CONFIG_CRYPTO_LZ4HC
 
     # Graphics (KMS for early boot display)
     scripts/config --enable CONFIG_DRM
@@ -213,8 +210,14 @@ prepare() {
         echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
     fi
 
+    # DM integrity + LZ4 crypto — forced after all merges so olddefconfig can't revert them.
+    # DM_INTEGRITY depends on BLK_DEV_DM (=y above); CRYPTO_LZ4/HC have no hard deps.
+    scripts/config --module CONFIG_DM_INTEGRITY
+    scripts/config --module CONFIG_CRYPTO_LZ4
+    scripts/config --module CONFIG_CRYPTO_LZ4HC
+
     # Final reconcile — olddefconfig will keep the symbols we just set because
-    # their dependencies (MISC_DEVICES, SYSFS, KEYS) are now satisfied.
+    # their dependencies (MISC_DEVICES, SYSFS, KEYS, BLK_DEV_DM) are now satisfied.
     make olddefconfig LOCALVERSION="$_localversion"
 
     # ── Hard verification — fail the build if JARVIS didn't land ──────────────
@@ -252,6 +255,7 @@ package_linux-jarvisos() {
 
     echo "  -> Installing boot image..."
     install -Dm644 arch/x86/boot/bzImage "$pkgdir/boot/vmlinuz-linux-jarvisos"
+    install -Dm644 arch/x86/boot/bzImage "$modulesdir/vmlinuz"
 
     echo "  -> Installing modules..."
     make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
