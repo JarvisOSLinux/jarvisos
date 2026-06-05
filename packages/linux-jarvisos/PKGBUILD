@@ -188,13 +188,6 @@ prepare() {
     # Done AFTER merge + olddefconfig so nothing can silently drop them.
     # CONFIG_MISC_DEVICES is the direct dependency of CONFIG_JARVIS — it must be
     # enabled first or olddefconfig will discard CONFIG_JARVIS.
-    # ── Disable features with API incompatibilities (enforced last, after all olddefconfig) ──
-    # Must run here so the second make olddefconfig cannot re-enable them.
-    scripts/config --disable CONFIG_IO_URING_ZCRX      # struct io_zcrx_ifq API mismatch
-    scripts/config --disable CONFIG_SCHED_CLASS_EXT    # struct scx_rq API mismatch
-    scripts/config --disable CONFIG_KEXEC_HANDOVER     # kho_retrieve_subtree signature mismatch
-    scripts/config --disable CONFIG_RUST               # Rust tracepoint infra broken in this tree
-
     echo "  -> Enforcing JARVIS driver config..."
     scripts/config --disable CONFIG_LOCALVERSION_AUTO
     scripts/config --enable CONFIG_SYSFS
