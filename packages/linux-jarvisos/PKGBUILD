@@ -123,7 +123,15 @@ prepare() {
 
     # Device mapper (LVM, LUKS encryption)
     scripts/config --enable CONFIG_BLK_DEV_DM
-    scripts/config --module CONFIG_DM_CRYPT
+    # dm-crypt built-in so initramfs can decrypt LUKS before module loading
+    scripts/config --enable CONFIG_DM_CRYPT
+
+    # LUKS2 crypto primitives — XTS is the default cipher mode (aes-xts-plain64),
+    # SHA-512 is the default PBKDF2 hash; both must be present or LUKS2 open fails.
+    scripts/config --enable CONFIG_CRYPTO_XTS
+    scripts/config --enable CONFIG_CRYPTO_SHA512
+    scripts/config --enable CONFIG_CRYPTO_SHA1
+    scripts/config --enable CONFIG_CRYPTO_AES_NI_INTEL
 
     # Graphics (KMS for early boot display)
     scripts/config --enable CONFIG_DRM
@@ -131,8 +139,14 @@ prepare() {
     scripts/config --module CONFIG_DRM_AMDGPU
     scripts/config --module CONFIG_DRM_NOUVEAU
     scripts/config --enable CONFIG_DRM_FBDEV_EMULATION
+    # SimpleDRM uses the EFI framebuffer handed off by the bootloader — required
+    # for Plymouth to display the LUKS password prompt before GPU drivers load.
+    scripts/config --enable CONFIG_DRM_SIMPLEDRM
     scripts/config --enable CONFIG_FB
+    scripts/config --enable CONFIG_FB_EFI
     scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE
+    # Deferred takeover: hold off console FB takeover so Plymouth owns it at boot.
+    scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER
 
     # Input devices
     scripts/config --enable CONFIG_INPUT
