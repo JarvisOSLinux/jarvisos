@@ -238,6 +238,13 @@ prepare() {
         echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
     fi
 
+    # ZRAM swap — systemd-zram-generator activates /dev/zram0 at boot;
+    # if the module is absent the boot hangs waiting for the device.
+    # ZSMALLOC is zram's memory allocator and must be enabled first.
+    scripts/config --enable CONFIG_ZSMALLOC
+    scripts/config --module CONFIG_ZRAM
+    scripts/config --enable CONFIG_ZRAM_WRITEBACK
+
     # DM integrity + compression crypto — forced after all merges so olddefconfig can't revert them.
     # DM_INTEGRITY depends on BLK_DEV_DM (=y above); CRYPTO_* have no hard deps.
     scripts/config --module CONFIG_DM_INTEGRITY
