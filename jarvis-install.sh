@@ -29,6 +29,7 @@ ROOT_PASS=""
 IS_EFI=false
 MOUNT_ROOT="/mnt/jarvis-install"
 PARTITION_MODE=""        # "auto" or "manual"
+JARVIS_MODEL="qwen3:4b" # AI model selected during install
 declare -A PART_MOUNT=() # partition dev -> mountpoint
 declare -A PART_FS=()    # partition dev -> filesystem
 declare -A PART_FORMAT=() # partition dev -> "yes"/"no"
@@ -357,7 +358,48 @@ step_user() {
     ROOT_PASS="${rp1}"
 }
 
-# ── Step 11: Summary ───────────────────────────────────────────────────────
+# ── Step 11: AI Model Selection ────────────────────────────────────────────
+step_ai_model() {
+    local ram_mb rec_model
+    ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)
+    local ram_gb=$(( ram_mb / 1024 ))
+
+    if   [ "${ram_mb}" -ge 16000 ]; then rec_model="llama3.1:8b"
+    elif [ "${ram_mb}" -ge  8000 ]; then rec_model="qwen3:8b"
+    elif [ "${ram_mb}" -ge  4000 ]; then rec_model="qwen3:4b"
+    else                                 rec_model="llama3.2:3b"
+    fi
+
+    local _q4b="Qwen3 4B     — balanced quality  (~2.6 GB)"
+    local _q8b="Qwen3 8B     — better quality    (~5.2 GB)"
+    local _l3b="Llama 3.2 3B — lightweight       (~2.0 GB)"
+    local _l8b="Llama 3.1 8B — high quality      (~4.9 GB)"
+    local _g4b="Gemma 3 4B   — Google model      (~3.3 GB)"
+    case "${rec_model}" in
+        "qwen3:4b")    _q4b="${_q4b} ★" ;;
+        "qwen3:8b")    _q8b="${_q8b} ★" ;;
+        "llama3.2:3b") _l3b="${_l3b} ★" ;;
+        "llama3.1:8b") _l8b="${_l8b} ★" ;;
+    esac
+
+    local choice
+    choice=$(dialog --clear --backtitle "JARVIS OS Installer" \
+        --title "AI Model Selection" \
+        --default-item "${rec_model}" \
+        --menu "Select AI model to install  (System RAM: ${ram_gb} GB — ★ = recommended)" \
+        22 72 6 \
+        "qwen3:4b"    "${_q4b}" \
+        "qwen3:8b"    "${_q8b}" \
+        "llama3.2:3b" "${_l3b}" \
+        "llama3.1:8b" "${_l8b}" \
+        "gemma3:4b"   "${_g4b}" \
+        "none"        "None — skip model download (configure after first boot)" \
+        3>&1 1>&2 2>&3) || choice="${rec_model}"
+
+    JARVIS_MODEL="${choice:-${rec_model}}"
+}
+
+# ── Step 12: Summary ───────────────────────────────────────────────────────
 step_summary() {
     local body=""
 
@@ -373,6 +415,8 @@ Partitioning: Manual
             body+="  ${part} → ${mnt} (${fs}, ${fmt})
 "
         done
+        local _model_label="${JARVIS_MODEL}"
+        [ "${_model_label}" = "none" ] && _model_label="None (configure after boot)"
         body+="
 Bootloader:  ${BOOT_LOADER}
 Timezone:    ${TIMEZONE}
@@ -380,6 +424,7 @@ Keyboard:    ${KEYMAP}
 Locale:      ${LOCALE}
 Hostname:    ${HOSTNAME_VAL}
 User:        ${NEW_USER}
+AI Model:    ${_model_label}
 
 Marked partitions will be formatted. Others kept.
 Proceed with installation?"
@@ -387,6 +432,8 @@ Proceed with installation?"
         local swap_label="${SWAP_SIZE} MiB"
         [ "${SWAP_SIZE}" = "0" ]    && swap_label="None"
         [ "${SWAP_SIZE}" = "file" ] && swap_label="4 GiB swapfile"
+        local _model_label="${JARVIS_MODEL}"
+        [ "${_model_label}" = "none" ] && _model_label="None (configure after boot)"
         body="Disk:        ${TARGET_DISK}
 Partitioning: Automatic
 Bootloader:  ${BOOT_LOADER}
@@ -397,6 +444,7 @@ Keyboard:    ${KEYMAP}
 Locale:      ${LOCALE}
 Hostname:    ${HOSTNAME_VAL}
 User:        ${NEW_USER}
+AI Model:    ${_model_label}
 
 ALL DATA on ${TARGET_DISK} will be erased.
 Proceed with installation?"
@@ -832,12 +880,15 @@ install_system() {
     # configure_system() sets up the symlink later; copy the real file now.
     cp --dereference /etc/resolv.conf "${MOUNT_ROOT}/etc/resolv.conf" 2>/dev/null || true
 
+    # Pass model selection into the chroot so install_packages_mode() can use it
+    printf '%s\n' "${JARVIS_MODEL:-qwen3:4b}" > "${MOUNT_ROOT}/tmp/.jarvis-model-choice"
+
     info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
     echo ""
     arch-chroot "${MOUNT_ROOT}" bash /tmp/jarvis-install --overlay \
         || die "JARVIS component install failed"
 
-    rm -f "${MOUNT_ROOT}/tmp/jarvis-install"
+    rm -f "${MOUNT_ROOT}/tmp/jarvis-install" "${MOUNT_ROOT}/tmp/.jarvis-model-choice"
     rm -rf "${MOUNT_ROOT}/opt/jarvis-kernel-pkg" 2>/dev/null || true
     ok "JARVIS OS components installed"
 }
@@ -1792,8 +1843,15 @@ UDEVRULES
                 && sed -i "s|^${k}=.*|${k}=${v}|" "${f}" \
                 || echo "${k}=${v}" >> "${f}"
         }
-        _set_env LLM_AUTO_PULL     true
-        _set_env LLM_MODEL         qwen3:4b
+        # Read installer model selection (written by install_system() before chroot)
+        local _inst_model
+        _inst_model=$(cat /tmp/.jarvis-model-choice 2>/dev/null \
+            | tr -cd '[:alnum:]:.-' | head -c 64)
+        [ -z "${_inst_model}" ] && _inst_model="qwen3:4b"
+        local _auto_pull="true"
+        [ "${_inst_model}" = "none" ] && { _inst_model="qwen3:4b"; _auto_pull="false"; }
+        _set_env LLM_AUTO_PULL     "${_auto_pull}"
+        _set_env LLM_MODEL         "${_inst_model}"
         _set_env VOSK_MODEL_PATH   /var/lib/jarvis/models/vosk/vosk-model-small-en-us-0.15
         _set_env TTS_MODEL_ONNX    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx
         _set_env TTS_MODEL_JSON    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx.json
@@ -1830,6 +1888,9 @@ JD
     # ── sudoers + polkit ──────────────────────────────────────────────────
     cat > /etc/sudoers.d/10-jarvis << 'SUDOERS_EOF'
 Defaults:jarvis !requiretty, !lecture, passwd_tries=0
+# Scoped NOPASSWD: only service management, network, and kernel module tools.
+# File-system write primitives (cp, mv, rm, chmod, chown) intentionally
+# excluded — JARVIS must request those through the TLA confirmation gate.
 jarvis ALL=(ALL) NOPASSWD: \
     /usr/bin/pacman,        \
     /usr/bin/systemctl,     \
@@ -1840,36 +1901,48 @@ jarvis ALL=(ALL) NOPASSWD: \
     /usr/bin/hostnamectl,   \
     /usr/bin/modprobe,      \
     /usr/bin/sysctl,        \
-    /usr/bin/chmod,         \
-    /usr/bin/chown,         \
-    /usr/bin/mkdir,         \
-    /usr/bin/tee,           \
-    /usr/bin/cp,            \
-    /usr/bin/mv,            \
-    /usr/bin/rm
+    /usr/bin/mkdir
 SUDOERS_EOF
     chmod 440 /etc/sudoers.d/10-jarvis
 
     mkdir -p /etc/polkit-1/rules.d
+    # Scoped polkit rules: allow only specific D-Bus actions — not entire
+    # org-prefix namespaces — to satisfy the TLA ELEVATED tier boundary.
+    # Full sudo (TLA SUDO tier) still requires out-of-band user confirmation
+    # via confirmation_manager.py; these rules cover ELEVATED-tier D-Bus ops.
     cat > /etc/polkit-1/rules.d/49-jarvis.rules << 'POLKIT_EOF'
 polkit.addRule(function(action, subject) {
     if (subject.user === "jarvis") {
-        var allowed = [
-            "org.freedesktop.systemd1",
-            "org.freedesktop.NetworkManager",
-            "org.freedesktop.timedate1",
-            "org.freedesktop.locale1",
-            "org.freedesktop.hostname1",
-            "org.freedesktop.login1",
+        // TLA ELEVATED: systemd unit management (start/stop/reload services)
+        var allowed_systemd = [
+            "org.freedesktop.systemd1.manage-units",
+            "org.freedesktop.systemd1.reload-daemon",
+            "org.freedesktop.systemd1.manage-unit-files",
         ];
-        for (var i = 0; i < allowed.length; i++) {
-            if (action.id.indexOf(allowed[i]) === 0) { return polkit.Result.YES; }
+        for (var i = 0; i < allowed_systemd.length; i++) {
+            if (action.id === allowed_systemd[i]) { return polkit.Result.YES; }
+        }
+        // TLA ELEVATED: network configuration (WiFi, IP, DNS)
+        var allowed_nm = [
+            "org.freedesktop.NetworkManager.network-control",
+            "org.freedesktop.NetworkManager.wifi.share.open",
+            "org.freedesktop.NetworkManager.settings.modify.system",
+        ];
+        for (var i = 0; i < allowed_nm.length; i++) {
+            if (action.id === allowed_nm[i]) { return polkit.Result.YES; }
+        }
+        // TLA ELEVATED: time, locale, hostname (read-only equivalent — only set ops)
+        if (action.id === "org.freedesktop.timedate1.set-timezone"   ||
+            action.id === "org.freedesktop.timedate1.set-ntp"        ||
+            action.id === "org.freedesktop.locale1.set-locale"       ||
+            action.id === "org.freedesktop.hostname1.set-hostname") {
+            return polkit.Result.YES;
         }
     }
 });
 POLKIT_EOF
     chmod 644 /etc/polkit-1/rules.d/49-jarvis.rules
-    ok "sudoers + polkit rules installed"
+    ok "sudoers + polkit rules installed (scoped to TLA ELEVATED tier)"
 
     # ── Systemd service units ─────────────────────────────────────────────
     info "Installing systemd service units..."
@@ -1946,10 +2019,18 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== JARVIS first-boot $(date) ==="
 [ -f "$MARKER" ] && echo "Already done." && exit 0
 MODEL="qwen3:4b"
-_m=""
+AUTO_PULL="true"
 if [ -f /usr/lib/jarvis/.env ]; then
     _m=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
     [ -n "$_m" ] && MODEL="$_m"
+    _ap=$(grep -E '^LLM_AUTO_PULL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
+    [ -n "$_ap" ] && AUTO_PULL="$_ap"
+fi
+if [ "${AUTO_PULL}" = "false" ]; then
+    echo "Auto-pull disabled by installer choice — skipping model download."
+    touch "$MARKER"
+    systemctl disable jarvis-setup.service 2>/dev/null || true
+    exit 0
 fi
 echo "Waiting for Ollama..."
 for i in $(seq 1 60); do
@@ -2347,6 +2428,7 @@ main() {
     step_locale
     step_hostname
     step_user
+    step_ai_model
     step_summary
 
     clear
@@ -2392,6 +2474,7 @@ main() {
     echo -e "${GREEN}${BOLD}  ║         JARVIS OS Installation Complete!         ║${NC}"
     echo -e "${GREEN}${BOLD}  ╚══════════════════════════════════════════════════╝${NC}"
     echo ""
+    local _final_model="${JARVIS_MODEL:-qwen3:4b}"
     echo -e "  ${BOLD}Summary:${NC}"
     echo -e "    Disk:        ${TARGET_DISK}"
     echo -e "    Bootloader:  ${BOOT_LOADER}"
@@ -2401,9 +2484,14 @@ main() {
     echo -e "    Locale:      ${LOCALE}"
     echo -e "    Hostname:    ${HOSTNAME_VAL}"
     echo -e "    User:        ${NEW_USER}"
+    echo -e "    AI Model:    ${_final_model}"
     echo ""
-    echo -e "  ${CYAN}JARVIS AI:${NC} The AI model downloads on first login."
-    echo -e "  A setup wizard will run automatically after you log in."
+    if [ "${_final_model}" = "none" ]; then
+        echo -e "  ${CYAN}JARVIS AI:${NC} No model selected. Run 'ollama pull <model>' after boot."
+    else
+        echo -e "  ${CYAN}JARVIS AI:${NC} Model '${_final_model}' pulls on first boot (internet required)."
+    fi
+    echo -e "  A setup wizard runs automatically after your first login."
     echo ""
     echo -e "  ${YELLOW}Remove the installation medium, then reboot:${NC}"
     echo -e "    ${BOLD}reboot${NC}"
