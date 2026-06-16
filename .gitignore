@@ -13,7 +13,7 @@ build.config
 
 archlinux-2025.11.01-x86_64.iso
 cachyos-*.iso
-
+CLAUDE-TODO.md
 # Distribution / packaging
 .Python
 build/
