@@ -1,0 +1,86 @@
+// PolicyKit rules for the JARVIS AI daemon (org.jarvisos.jarvis)
+//
+// TLA tier mapping:
+//   SAFE      → no escalation needed
+//   ELEVATED  → audit log only
+//   DANGEROUS → requires explicit user confirmation (out-of-band, not from model output)
+//   FORBIDDEN → hard block, no escalation path
+//
+// The JARVIS daemon runs as a system service (jarvis.service).
+// It must not self-escalate. All privilege grants require the active
+// desktop session user to confirm via an out-of-band channel
+// (Textual modal, desktop notification, or stdin prompt).
+
+polkit.addRule(function(action, subject) {
+
+    // -------------------------------------------------------------------------
+    // Introspection: daemon may always query PolicyKit about its own actions
+    // -------------------------------------------------------------------------
+    if (action.id == "org.jarvisos.jarvis.query") {
+        return polkit.Result.YES;
+    }
+
+    // -------------------------------------------------------------------------
+    // ELEVATED tier — allowed automatically for the active session user.
+    // These are read-heavy or low-risk operations that the daemon performs
+    // on behalf of the logged-in user.  Audit logged by jarvis_policy.c.
+    // -------------------------------------------------------------------------
+    var elevatedActions = [
+        "org.jarvisos.jarvis.read-system-info",
+        "org.jarvisos.jarvis.read-logs",
+        "org.jarvisos.jarvis.manage-user-files",
+    ];
+
+    for (var i = 0; i < elevatedActions.length; i++) {
+        if (action.id == elevatedActions[i]) {
+            if (subject.isInGroup("jarvis-elevated") || subject.active) {
+                return polkit.Result.YES;
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // DANGEROUS tier — require explicit authentication from the active user.
+    // Polkit will surface a password/authentication dialog.  The JARVIS daemon
+    // must also receive an out-of-band confirmation from ConfirmationManager
+    // before calling the underlying privileged operation.
+    // -------------------------------------------------------------------------
+    var dangerousActions = [
+        "org.jarvisos.jarvis.install-package",
+        "org.jarvisos.jarvis.modify-system-config",
+        "org.jarvisos.jarvis.manage-services",
+        "org.jarvisos.jarvis.network-config",
+        "org.jarvisos.jarvis.kernel-module",
+    ];
+
+    for (var i = 0; i < dangerousActions.length; i++) {
+        if (action.id == dangerousActions[i]) {
+            if (subject.active && subject.local) {
+                // AUTH_ADMIN_KEEP: cached for the duration of the task only.
+                // The daemon is responsible for calling polkit_authority_revoke_tmp_authorizations()
+                // on task completion so the grant does not persist across sessions.
+                return polkit.Result.AUTH_ADMIN_KEEP;
+            }
+            return polkit.Result.NOT_HANDLED;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // FORBIDDEN tier — hard block.  No escalation path exists.
+    // Model output cannot trigger these.
+    // -------------------------------------------------------------------------
+    var forbiddenActions = [
+        "org.jarvisos.jarvis.modify-polkit-rules",
+        "org.jarvisos.jarvis.modify-sudo-config",
+        "org.jarvisos.jarvis.disable-security-modules",
+    ];
+
+    for (var i = 0; i < forbiddenActions.length; i++) {
+        if (action.id == forbiddenActions[i]) {
+            return polkit.Result.NO;
+        }
+    }
+
+    // Default: not handled — fall through to other rules or system defaults
+    return polkit.Result.NOT_HANDLED;
+});
