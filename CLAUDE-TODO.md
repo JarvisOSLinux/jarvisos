@@ -33,42 +33,44 @@ Charter is written. Remaining decisions:
 
 ## Open — Ready to Merge
 
-### [Project-JARVIS#123] Cross-platform support: abstract Linux-specific subsystems
+### [Project-JARVIS] PR #125 — Cross-platform support
 **Issue:** https://github.com/JarvisOSLinux/Project-JARVIS/issues/123 (closed)
-**PR:** https://github.com/JarvisOSLinux/Project-JARVIS/pull/125
+**PR:** https://github.com/JarvisOSLinux/Project-JARVIS/pull/125 — not draft, MERGEABLE
 
-Add `jarvis/platform/` abstraction layer (~300 lines) for IPC, paths, notifications, service control. Five subsystems currently Linux-only:
-
-| Subsystem | Linux API | Fix |
-|-----------|-----------|-----|
-| IPC socket | `AF_UNIX`, `asyncio.start_unix_server()` | Windows: TCP localhost + lockfile |
-| Socket security | `os.getuid()`, `chmod(0o600)` | Windows: skip/stub |
-| Notifications | `notify-send` | macOS: `osascript`; Windows: `plyer` |
-| Ollama auto-start | `systemctl` | macOS: `launchctl`; Windows: `Popen` |
-| Config/data paths | XDG `~/.config/` `~/.local/share/` | macOS: `~/Library/`; Windows: `%APPDATA%` |
-
-Files to update: `runtime/io.py`, `cli.py`, `core/socket_security.py`, `core/confirmation_manager.py`, `llm/providers/ollama.py`, `config.py`, `runtime/lifecycle.py`
+Adds `jarvis/platform/` (LinuxPlatform / MacOSPlatform / WindowsPlatform) auto-selected at import time. Abstracts IPC socket, socket security, config/data paths, desktop notifications, Ollama service control, signal handlers. All consumers updated.
 
 ---
 
-### [Project-JARVIS#121] Audit and rewrite documentation for all subsystems
+### [Project-JARVIS] PR #126 — Doc audit + rewrite
 **Issue:** https://github.com/JarvisOSLinux/Project-JARVIS/issues/121 (closed)
-**PR:** https://github.com/JarvisOSLinux/Project-JARVIS/pull/126
+**PR:** https://github.com/JarvisOSLinux/Project-JARVIS/pull/126 — not draft, MERGEABLE
+
+CLAUDE.md Key Files table fixed; README Quick Start + install step 7 updated; new `docs/architecture.md`; `docs/tui-overview.md` rewritten; 5 stale docs deleted.
 
 ---
 
-## Submodule State (2026-06-22 — after today's session)
+## Needs Resolution Before Merge
+
+### [dmcp] PR #2 — Unit tests (27 tests)
+**PR:** https://github.com/JarvisOSLinux/dmcp/pull/2 — DRAFT + CONFLICTING (merge conflicts)
+
+Covers models, discovery, paths, sources. Needs conflict resolution before it can merge.
+
+---
+
+## Submodule State (2026-06-23 — after today's session)
 
 | Submodule | Pinned | Status |
 |-----------|--------|--------|
-| Project-JARVIS | `5e9cc54` (JarvisOSLinux/main, v1.0.0) | **Up to date** — switched to org canonical, bumped today |
+| Project-JARVIS | `5e9cc54` (JarvisOSLinux/main, v1.0.0) | Up to date — bumps after PR #125/#126 merge |
 | dmcp | `c830e64` | Up to date |
-| dispatch | `706680a` (CI + notify-parent) | **Up to date** — bumped today |
-| linux-jarvisos | `f0db290` | Up to date |
+| dispatch | `706680a` (CI + notify-parent) | Up to date |
+| linux-jarvisos | `f5db0e2` (path-based policy) | **Up to date** — bumped today |
 
 Open PRs not yet merged to main (not yet pinnable):
-- **PR #125** — cross-platform layer (#123)
-- **PR #126** — doc audit (#121)
+- **Project-JARVIS PR #125** — cross-platform layer (#123) — ready to merge
+- **Project-JARVIS PR #126** — doc audit (#121) — ready to merge
+- **dmcp PR #2** — unit tests — draft + conflicts, needs work
 
 ---
 
@@ -77,7 +79,7 @@ Open PRs not yet merged to main (not yet pinnable):
 - [x] **jarvisos submodule bump** — Project-JARVIS `5d1af84` → `5e9cc54` (JarvisOSLinux/main v1.0.0); switched .gitmodules to org canonical; dispatch `86b9c99` → `706680a`
 - [x] **Project-JARVIS#123** — Cross-platform abstraction layer `jarvis/platform/` (PR #125, issue closed)
 - [x] **Project-JARVIS#121** — Doc audit + rewrite: CLAUDE.md, README, new architecture.md, tui-overview rewrite, 5 stale docs deleted (PR #126, issue closed)
-- [x] **linux-jarvisos path-based policy** — `jarvis_policy.c` + `jarvis_policy.h` + UAPI extended with `path_prefix`/`path` fields; 10 default FORBIDDEN/DANGEROUS rules; PR #2 open on linux-jarvisos (awaiting merge before submodule bump)
+- [x] **linux-jarvisos path-based policy** — `jarvis_policy.c` + `jarvis_policy.h` + UAPI extended with `path_prefix`/`path` fields; 10 default FORBIDDEN/DANGEROUS rules; PR #2 merged; jarvisos pin bumped `1a211ae` → `f5db0e2`
 - [x] **Kernel 7.1.1 build** — Clean build (exit 0, 0 errors) on Linode g6-dedicated-48 (48 vCPU, us-lax); 4 packages downloaded to `kernel-pkg/v7.1.1/`; checksums verified; Linode deleted
 
 ---
