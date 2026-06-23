@@ -77,6 +77,8 @@ Open PRs not yet merged to main (not yet pinnable):
 - [x] **jarvisos submodule bump** — Project-JARVIS `5d1af84` → `5e9cc54` (JarvisOSLinux/main v1.0.0); switched .gitmodules to org canonical; dispatch `86b9c99` → `706680a`
 - [x] **Project-JARVIS#123** — Cross-platform abstraction layer `jarvis/platform/` (PR #125, issue closed)
 - [x] **Project-JARVIS#121** — Doc audit + rewrite: CLAUDE.md, README, new architecture.md, tui-overview rewrite, 5 stale docs deleted (PR #126, issue closed)
+- [x] **linux-jarvisos path-based policy** — `jarvis_policy.c` + `jarvis_policy.h` + UAPI extended with `path_prefix`/`path` fields; 10 default FORBIDDEN/DANGEROUS rules; PR #2 open on linux-jarvisos (awaiting merge before submodule bump)
+- [x] **Kernel 7.1.1 build** — Clean build (exit 0, 0 errors) on Linode g6-dedicated-48 (48 vCPU, us-lax); 4 packages downloaded to `kernel-pkg/v7.1.1/`; checksums verified; Linode deleted
 
 ---
 
