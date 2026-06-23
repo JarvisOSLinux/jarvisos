@@ -13,7 +13,7 @@
 
 pkgbase=linux-jarvisos
 pkgname=(linux-jarvisos linux-jarvisos-headers)
-pkgver=7.0.11
+pkgver=7.1.1
 pkgrel=1
 pkgdesc='Linux kernel with JARVIS AI integration drivers'
 arch=(x86_64)
