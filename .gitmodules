@@ -1,7 +1,7 @@
 [submodule "Project-JARVIS"]
 	path = Project-JARVIS
-	url = git@github.com:YakupAtahanov/Project-JARVIS.git
-	branch = linux-integration-preparation
+	url = git@github.com:JarvisOSLinux/Project-JARVIS.git
+	branch = main
 [submodule "dmcp"]
 	path = dmcp
 	url = git@github.com:YakupAtahanov/dmcp.git
