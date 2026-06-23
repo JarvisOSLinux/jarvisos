@@ -11,4 +11,4 @@
 [submodule "linux-jarvisos"]
 	path = linux-jarvisos
 	url = git@github.com:JarvisOSLinux/linux-jarvisos.git
-	branch = jarvisos-7.0-stable
+	branch = stable
