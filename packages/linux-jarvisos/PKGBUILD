@@ -224,11 +224,19 @@ prepare() {
         echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
     fi
 
-    # DM integrity + LZ4 crypto — forced after all merges so olddefconfig can't revert them.
-    # DM_INTEGRITY depends on BLK_DEV_DM (=y above); CRYPTO_LZ4/HC have no hard deps.
+    # DM integrity + compression crypto — forced after all merges so olddefconfig can't revert them.
+    # DM_INTEGRITY depends on BLK_DEV_DM (=y above); CRYPTO_* have no hard deps.
     scripts/config --module CONFIG_DM_INTEGRITY
     scripts/config --module CONFIG_CRYPTO_LZ4
     scripts/config --module CONFIG_CRYPTO_LZ4HC
+    scripts/config --module CONFIG_CRYPTO_ZSTD
+
+    # ZRAM compressed RAM block device (systemd-zram-setup / zramctl at boot).
+    # ZSMALLOC is the required allocator backend — ZRAM selects it but only if
+    # CONFIG_ZRAM itself is set first.  Without these, the systemd zram0 setup
+    # job hangs for ~29 s and the boot timeout fires, blocking the desktop start.
+    scripts/config --module CONFIG_ZRAM
+    scripts/config --enable CONFIG_ZSMALLOC
 
     # Final reconcile — olddefconfig will keep the symbols we just set because
     # their dependencies (MISC_DEVICES, SYSFS, KEYS, BLK_DEV_DM) are now satisfied.
