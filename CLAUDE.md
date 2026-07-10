@@ -13,7 +13,7 @@ JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The
 ## Design Principles
 
 **Auto-install missing dependencies — never warn and bail.** Any package required by a build step, installer mode, or runtime must be installed automatically if not present. Do not warn the user that a tool is missing and exit — install it first, then proceed. This applies everywhere:
-- `jarvis-install.sh --overlay` / `--install-packages` — installs `dialog`, `base-devel`, `bc`, `flex`, `bison`, `openssl`, `libelf`, `pahole` at the top of `install_packages_mode()` before anything else runs
+- `jarvis-install.sh --overlay` / `--install-packages` (repo-root script, doubles as live-ISO TUI and chroot dependency installer) — installs `dialog`, `base-devel`, `bc`, `flex`, `bison`, `openssl`, `libelf`, `pahole` at the top of `install_packages_mode()` before anything else runs
 - `iso-build-scripts/00-install-prereq.sh` (`make prereq`) — installs all ISO build tools + kernel build tools for all supported distros (Arch, Fedora, Ubuntu, openSUSE)
 - Any new feature that needs a host tool: add it to both `jarvis-install.sh`'s dep block and `00-install-prereq.sh`
 
@@ -104,16 +104,16 @@ PKGBUILD at `packages/linux-jarvisos/PKGBUILD` — reads `KERNEL_SRC` env var po
 - **`dmcp/`** — Rust crate; MCP server registry and lifecycle manager
 - **`contextor/`** — Rust crate; context/memory layer
 
-Submodule tracks branch `linux-integration-preparation`. `dispatch/` and `dmcp/` also exist as separate top-level submodules (mirrors of what's inside `Project-JARVIS/`).
+Submodule tracks branch `main`. `dispatch/` and `dmcp/` also exist as separate top-level submodules (mirrors of what's inside `Project-JARVIS/`). Pinned commits for all four tracked subsystems (`dispatch`, `dmcp`, `Project-JARVIS`, `linux-jarvisos`) live in `versions.lock` at the project root, auto-updated by `.github/workflows/track-subsystems.yml` when a subsystem repo pushes to its default branch — the ISO build pipeline reads this file to clone the correct revision of each component.
 
 ### ISO Pipeline (`iso-build-scripts/`)
 
 Steps are idempotent and can be resumed with `make rest`. Each numbered script (`01`–`07`) performs one phase; `03b-build-kernel.sh` runs between steps 3 and 4 and is the only step that requires `makepkg` on the host.
 
 - Step 4 (`04-bake-jarvis.sh`) — copies `Project-JARVIS` into the rootfs chroot, creates Python venv, installs Ollama, installs `jarvis.service`
-- Step 5 (`05-bake-installer.sh`) — installs the TUI installer (`packages/jarvis-installer/jarvis-install.sh`) which auto-launches on TTY1 in the live environment
+- Step 5 (`05-bake-installer.sh`) — installs the TUI installer (repo-root `jarvis-install.sh`) which auto-launches on TTY1 in the live environment
 
-`05-bake-calamares.sh` is a legacy script; the Makefile uses `05-bake-installer.sh`. The `cachyos-calamares` submodule is **discontinued** — ignore its upstream drift.
+`05-bake-calamares.sh` no longer exists (removed); the Makefile uses `05-bake-installer.sh`. The `cachyos-calamares` submodule is fully removed from `.gitmodules` — see Submodule Map below.
 
 ### Standalone Agent Root Files
 
@@ -121,21 +121,30 @@ Steps are idempotent and can be resumed with `make rest`. Each numbered script (
 - `jarvis-wake.py` — wake-word / lightweight listener front-end
 - `test-jarvis-ollama.sh` — bootstrapper: installs deps, creates venv, selects model by RAM, launches agent
 
-## TUI Installer (`packages/jarvis-installer/jarvis-install.sh`)
+## TUI Installer (`jarvis-install.sh`, repo root)
 
 Bash + `dialog` TUI that runs as root. Installer flow: welcome → disk select → partition mode (auto/manual) → bootloader → filesystem → swap → timezone → locale → hostname → user/passwords → summary → partition/format → pacstrap → chroot config → bootloader install → JARVIS stack install → reboot.
 
+The same script is invoked a second time inside the target chroot as `jarvis-install --overlay` (aliased `--install-packages`) to run `install_packages_mode()` — the dependency-install + JARVIS-stack step. Don't assume it only runs once per install.
+
 Currently in progress: post-install JARVIS service configuration and model selection on first boot.
+
+## Standalone Kernel Build Scripts (outside the ISO pipeline)
+
+Two root/iso-build-scripts scripts build `linux-jarvisos` without the full ISO pipeline:
+- `build-kernel.sh` (repo root) — build (and optionally `pacman -U` install) the kernel on the local Arch host; supports `--clean`, `--force`, `SKIP_BUILD=1`
+- `iso-build-scripts/vps-kernel-build.sh` — provisions a throwaway Linode VPS (48-core, needs `JARVIS_LINODE_TOKEN`) to build the kernel package remotely when local hardware is too slow, fetches the built `.pkg.tar.zst`s, then destroys the VPS (`--keep-vps` to skip teardown). Mirrors `.github/workflows/kernel-build.yml`, which does the same thing in CI on pushes touching `linux-jarvisos/**` or `packages/linux-jarvisos/**`.
 
 ## Submodule Map
 
 ```
-linux-jarvisos/    → git@github.com:JarvisOSLinux/linux-jarvisos.git  (branch: jarvisos-7.0-stable)
-Project-JARVIS/    → git@github.com:YakupAtahanov/Project-JARVIS.git  (branch: linux-integration-preparation)
+linux-jarvisos/    → git@github.com:JarvisOSLinux/linux-jarvisos.git  (branch: stable)
+Project-JARVIS/    → git@github.com:JarvisOSLinux/Project-JARVIS.git  (branch: main)
 dmcp/              → git@github.com:YakupAtahanov/dmcp.git
 dispatch/          → git@github.com:YakupAtahanov/dispatch.git
-cachyos-calamares/ → DISCONTINUED — do not update or reference
 ```
+
+`cachyos-calamares` has been removed from `.gitmodules` entirely — it is gone, not just discontinued. Ignore any stale references to it elsewhere (e.g. README.md still describes a Calamares install flow; the actual installer is `jarvis-install.sh`, see below).
 
 Initialize all submodules:
 ```bash
