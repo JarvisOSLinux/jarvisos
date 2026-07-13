@@ -8,90 +8,65 @@
 
 ---
 
-## Cybersecurity Roadmap
+## Security Protocols & Threat Model
 
-JARVIS OS is a research platform studying what happens when a large language model is given full OS privileges. The [seven-threat taxonomy](https://jarvisoslinux.org/research#taxonomy) documented on the website drives the security work below. Items are ordered by severity.
+JARVIS OS is a research platform studying what happens when a large language model is given full OS privileges. The [seven-threat taxonomy](https://jarvisoslinux.org/research#taxonomy) documented on the website — six threats formalized in the WSU Everett paper (`Project-JARVIS/docs/research.md`), plus the novel "forgetful context" finding (#7) — drives the security work below. **Canonical enforcement status lives in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`; this section summarizes it and must not drift ahead of it.**
 
-### Threat Mitigations — 7-Threat Taxonomy
+Enforcement is layered: the **TLA (Threat Level Access)** confirmation gate runs in userspace in the JARVIS daemon (`Project-JARVIS/jarvis/core/confirmation_manager.py`, `jarvis/runtime/dispatch_flow.py`) and is the layer actually gating tool calls today. The kernel's own 4-tier policy engine (`jarvis_policy.c`, SAFE/ELEVATED/DANGEROUS/FORBIDDEN via `/dev/jarvis`) is real and working at the OS level but is **not yet consulted from the daemon** — `KernelClient.policy_check` has no caller in the execution path. Do not describe current behavior as "kernel-enforced" until that wiring lands.
 
-These map directly to the threats identified through live JARVIS OS operation:
+### Threat Taxonomy — Implementation Status
 
-- [ ] **#4 / #5 — Unauthorized sudo escalation & capability chaining (Critical)**
-  Implement scoped sudo rules in `jarvis.service` that match the kernel policy tier exactly. DANGEROUS-tier actions must require explicit user confirmation before any `sudo` invocation; capabilities granted must not be reusable for chained operations beyond what was authorized.
+| # | Threat | Status |
+|---|--------|--------|
+| 1 | MCP keyword-match / tool-selection accuracy | partial — keyword fallback with embedding-first search when available |
+| 2 | Misleading MCP server descriptions | partial — official-tier review of tool descriptions + structured schema |
+| 3 | MCP server integrity verification | implemented — `dmcp install` verifies `integrity.manifestSha256` before parse/merge, agent source-confined to configured registries; cryptographic (keyed) signatures still planned |
+| 4 | Unauthorized sudo via MCP | implemented, with a known gap — bundled `shellmcp`'s `run_command` does not declare `confirmation_required`, so under default `smart` mode it's gated only by the sudo password prompt, not the confirmation layer (Project-JARVIS #159) |
+| 5 | Sudo capability exploitation | implemented, same gap as #4 — TLA gate is goal-scoped |
+| 6 | Bloated context | partial — dispatch rolling window + contextor pruning; persistent constraint preservation across context refreshes not implemented |
+| 7 | Forgetful context (novel) | **not yet mitigated** — no persistent constraint register in the daemon today; this is the highest-priority open item |
+| — | Kernel 4-tier policy engine | working at the OS level, but **not consulted from the daemon** (OS-side, disconnected from the userspace gate above) |
 
-- [ ] **#7 — Forgetful context constraint enforcement (Novel / Critical)**
-  The LLM silently drops security constraints stated earlier in the session — the novel finding with no prior literature. Implement a persistent constraint register in the daemon that re-injects active security rules into every LLM prompt, independent of context window state.
+### Threat Model Summary
 
-- [ ] **#3 — MCP server integrity verification (High)**
-  Third-party MCP servers registered via `dmcp` have no integrity checks. Add cryptographic signature verification (GPG or ed25519) for community MCP server manifests before `dmcp` allows registration. Maintain a signed allowlist of reviewed servers.
+**Assets:** user shell/filesystem, `.env`/API keys, conversation history, contextor memory store, MCP server processes, the daemon's Unix socket.
+**Attacker profiles:** remote attacker, local attacker (different OS user), same-user attacker (malicious dependency), prompt injector (adversarial content in web pages/files/tool output).
+**Escalation stages studied:** user-level (no sudo) → sudo-enabled → sudo + web-enabled (exfiltration/remote injection).
 
-- [ ] **#2 — Misleading MCP server description guardrails (High)**
-  Ambiguous server descriptions cause the LLM to invoke unintended tools. Add a `dmcp` validation step that flags servers whose tool descriptions are semantically ambiguous or overlap with system-critical tool names.
+Full asset table, attacker profiles, and the OpenClaw CVE-by-CVE comparison (JARVIS has no WebSocket gateway, no auth token, no TCP listener — eliminating the two CVE classes that hit OpenClaw by design) live in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`.
 
-- [ ] **#6 — File operation guardrails (High)**
-  Unintended file modification/deletion is currently only blocked at the FORBIDDEN tier for obvious patterns (`rm -rf /`, `dd`). Extend `jarvis_policy.c` with path-based rules — writes to `/etc`, `/usr`, `/boot`, and kernel module directories must be DANGEROUS-tier at minimum, requiring explicit user confirmation.
+### Open Work
 
-- [ ] **#1 — MCP keyword match accuracy improvement (Medium)**
-  The AI selects wrong tools via superficial keyword matching. Evaluate embedding-based semantic tool selection in `dispatch` as an alternative to keyword routing, and add a confidence threshold below which the daemon asks for user clarification before invoking any tool.
+- [ ] **#7 — Forgetful context constraint register (Novel / Critical)**
+  Implement a persistent constraint register in the daemon that re-injects active security rules into every LLM prompt, independent of context window state. No prior literature — this is JARVIS OS's own finding.
 
-### Kernel & Driver Hardening
+- [ ] **Wire kernel policy engine into the daemon's execution path**
+  `KernelClient.policy_check` and `get_api_key` exist but have no callers. Until the daemon actually consults `/dev/jarvis` policy before executing tool calls, the kernel-side 4-tier engine is defense-in-depth on paper only.
 
-- [ ] **seccomp-bpf filter for the JARVIS daemon**
-  Profile the exact syscalls used by `jarvis-daemon` and apply a strict seccomp allowlist via the systemd `SystemCallFilter=` directive or a hand-written BPF filter.
+- [ ] **Close the `shellmcp` confirmation gap (Project-JARVIS #159)**
+  Force-confirm privileged / `scope: system` tools at the host level regardless of the manifest's `confirmation_required` flag, so a tool author cannot opt a dangerous tool out of gating.
 
-- [ ] **Kernel keyring key TTL and auto-expiry**
-  API keys stored via `jarvis_keys.c` currently persist indefinitely. Add per-key expiration timers and a session-based mode (keys expire on daemon restart or configurable timeout).
+- [ ] **File operation guardrails in `jarvis_policy.c`**
+  Currently only obvious destructive patterns (`rm -rf /`, `dd`) hit FORBIDDEN. Add path-based rules — writes to `/etc`, `/usr`, `/boot`, kernel module directories — as DANGEROUS-tier minimum.
 
 - [ ] **Policy pattern bounds checking**
-  `jarvis_policy.c` `pattern_match()` does not validate the length of `server` and `tool` strings from userspace. Add explicit length checks before comparison.
+  `jarvis_policy.c` `pattern_match()` does not validate the length of `server`/`tool` strings from userspace before comparing them.
 
-- [ ] **LSM integration (SELinux / AppArmor)**
-  The policy engine operates above the LSM layer. Write an AppArmor profile (or SELinux policy module) for `jarvis-daemon` that enforces mandatory access control independently of the userspace policy tier, providing defense-in-depth.
+- [ ] **Kernel keyring key TTL and auto-expiry**
+  API keys in `jarvis_keys.c` persist indefinitely; add per-key expiration and a session-based mode.
 
-- [ ] **Pin linux-jarvisos submodule to commit hash, not branch**
-  `linux-jarvisos/` tracks `jarvisos-7.0-stable` by branch ref. Change `.gitmodules` to pin a specific commit SHA to prevent supply-chain drift and ensure upstream CVE patches are applied deliberately.
+- [ ] **seccomp-bpf filter for the JARVIS daemon / MCP server sandboxing**
+  Profile daemon syscalls and apply a `SystemCallFilter=` allowlist; investigate running each MCP server in an isolated child process instead of the daemon's process space.
 
-### MCP Layer (dmcp / dispatch)
+- [ ] **LSM integration (SELinux / AppArmor)** for `jarvis-daemon`, as defense-in-depth below the userspace policy tier.
 
-- [ ] **Permission enforcement audit in `dmcp`**
-  Verify that `dmcp`'s tool registration and lifecycle management enforces the four-tier policy on every tool invocation, not just at registration time. Add integration tests that confirm a FORBIDDEN-tier tool cannot be executed regardless of which MCP server registers it.
+- [ ] **Pin `linux-jarvisos` submodule to a commit SHA, not a branch ref**, to make upstream CVE patches a deliberate action rather than silent drift.
 
-- [ ] **Socket confirmation message integrity**
-  The TLA confirmation gate sends JSON over a local socket. Add a nonce/HMAC to each confirmation message to prevent replay attacks if the socket path is accessible to other processes.
+- [ ] **`SECURITY.md` at this repo's root.** Project-JARVIS already has one (`Project-JARVIS/SECURITY.md`); this repo (`jarvisos`) does not yet.
 
-- [ ] **MCP server sandboxing**
-  Community MCP servers loaded by `dmcp` run in the same process space as the daemon. Investigate running each MCP server in an isolated child process with a restricted seccomp profile and no ambient capabilities.
+- [ ] **Log rotation, credential redaction, and append-only audit log** for `/var/log/jarvis/`.
 
-### Audit & Logging
-
-- [ ] **Log rotation for `/var/log/jarvis/jarvis.log`**
-  Add a `logrotate` configuration file (installed to `/etc/logrotate.d/jarvis`) with size limits, compression, and retention policy.
-
-- [ ] **Credential redaction in log output**
-  The daemon logger does not explicitly scrub API keys or tokens. Add a log filter that redacts strings matching known key patterns before any output to file or journal.
-
-- [ ] **Append-only audit log**
-  Integrate with `systemd-journal` or `auditd` so the JARVIS audit trail cannot be modified or deleted by a compromised userspace process. Set `/var/log/jarvis/` to mode `0750`, owned by `jarvis:jarvis`.
-
-- [ ] **Secret scanning in build pipeline**
-  Add a pre-commit hook (git-secrets or trufflehog) to the repo to block accidental credential commits. Wire it into the Makefile `check` target.
-
-### Research Deliverables
-
-- [ ] **Formal threat model document (`THREAT_MODEL.md`)**
-  Document the full attack surface: kernel driver, daemon, MCP layer, LLM inference, and the novel forgetful-context threat. Include attacker assumptions, trust boundaries, and mitigations for each threat.
-
-- [ ] **Vulnerability disclosure policy (`SECURITY.md`)**
-  Add a `SECURITY.md` at repo root with a responsible disclosure process, contact method, and expected response time.
-
-- [ ] **SURCA poster materials**
-  Publish the SURCA poster (WSU Everett) and experimental data to `/research` or `docs/` once the presentation is complete.
-
-- [ ] **Controlled experiment data for academic paper**
-  Run the three privilege escalation tiers (sandboxed, sudo-elevated, web-enabled) against the full threat taxonomy and publish reproducible results. The paper is currently pending experimental data.
-
-- [ ] **Security architecture diagram**
-  Add a diagram showing the full trust boundary stack: LLM → dispatch → dmcp → TLA confirmation gate → kernel policy → CAP enforcement → LSM. Include where each of the 7 threats is intercepted (or not).
+- [ ] **Formal `THREAT_MODEL.md`** consolidating the kernel/daemon/MCP/LLM attack surface and the full trust boundary diagram (LLM → dispatch → dmcp → TLA gate → kernel policy → CAP enforcement → LSM), marking where each of the 7 threats is actually intercepted today.
 
 ---
 
