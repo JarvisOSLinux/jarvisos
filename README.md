@@ -10,7 +10,7 @@
 
 ## Security Protocols & Threat Model
 
-JARVIS OS is a research platform studying what happens when a large language model is given full OS privileges. The [seven-threat taxonomy](https://jarvisoslinux.org/research#taxonomy) documented on the website — six threats formalized in the WSU Everett paper (`Project-JARVIS/docs/research.md`), plus the novel "forgetful context" finding (#7) — drives the security work below. **Canonical enforcement status lives in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`; this section summarizes it and must not drift ahead of it.**
+JARVIS OS is a research platform studying what happens when a large language model is given full OS privileges. The [sic-threat taxonomy](https://jarvisoslinux.org/research#taxonomy) documented on the website — six threats formalized in the WSU Everett paper (`Project-JARVIS/docs/research.md`), plus the novel "forgetful context" finding (#7) — drives the security work below. **Canonical enforcement status lives in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`; this section summarizes it and must not drift ahead of it.**
 
 Enforcement is layered: the **TLA (Threat Level Access)** confirmation gate runs in userspace in the JARVIS daemon (`Project-JARVIS/jarvis/core/confirmation_manager.py`, `jarvis/runtime/dispatch_flow.py`) and is the layer actually gating tool calls today. The kernel's own 4-tier policy engine (`jarvis_policy.c`, SAFE/ELEVATED/DANGEROUS/FORBIDDEN via `/dev/jarvis`) is real and working at the OS level but is **not yet consulted from the daemon** — `KernelClient.policy_check` has no caller in the execution path. Do not describe current behavior as "kernel-enforced" until that wiring lands.
 
