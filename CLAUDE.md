@@ -146,6 +146,14 @@ dispatch/          → git@github.com:YakupAtahanov/dispatch.git
 
 `cachyos-calamares` has been removed from `.gitmodules` entirely — it is gone, not just discontinued. Ignore any stale references to it elsewhere (e.g. README.md still describes a Calamares install flow; the actual installer is `jarvis-install.sh`, see below).
 
+### Why dispatch/ and dmcp/ appear twice
+
+`Project-JARVIS` carries its own copies as submodules under `deps/rust/`.
+The top-level `dispatch/` and `dmcp/` in this repo exist for the ISO build
+pipeline — `03b-build-kernel.sh` and `04-bake-jarvis.sh` need direct access
+to the Rust crates without navigating through `Project-JARVIS/`. Both
+pointers must track the same commit; update them together.
+
 Initialize all submodules:
 ```bash
 git submodule update --init --recursive
