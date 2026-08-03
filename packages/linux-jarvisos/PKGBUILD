@@ -98,12 +98,15 @@ prepare() {
     # Storage (SATA, NVMe, virtio for VMs)
     scripts/config --enable CONFIG_ATA
     scripts/config --enable CONFIG_SATA_AHCI
+    scripts/config --enable CONFIG_ATA_PIIX        # PATA/IDE — QEMU uses this for -cdrom
     scripts/config --enable CONFIG_BLK_DEV_NVME
     scripts/config --enable CONFIG_BLK_DEV_SD
     scripts/config --enable CONFIG_VIRTIO_BLK
     scripts/config --enable CONFIG_VIRTIO_PCI
     scripts/config --enable CONFIG_SCSI
     scripts/config --enable CONFIG_SCSI_MOD
+    scripts/config --enable CONFIG_SCSI_LOWLEVEL   # needed for BLK_DEV_SR
+    scripts/config --enable CONFIG_BLK_DEV_SR      # SCSI CD-ROM — archiso mounts the live ISO via /dev/sr0
 
     # Filesystems (needed for the installed system + live boot)
     # iso9660 =y (built-in) so the archiso hook can mount the ISO device without
@@ -142,6 +145,9 @@ prepare() {
     # SimpleDRM uses the EFI framebuffer handed off by the bootloader — required
     # for Plymouth to display the LUKS password prompt before GPU drivers load.
     scripts/config --enable CONFIG_DRM_SIMPLEDRM
+    # VirtIO GPU — QEMU uses -vga virtio; without this the framebuffer never
+    # initialises and all boot output is invisible (appears as a hang).
+    scripts/config --module CONFIG_DRM_VIRTIO_GPU
     scripts/config --enable CONFIG_FB
     scripts/config --enable CONFIG_FB_EFI
     scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE
@@ -159,6 +165,7 @@ prepare() {
     scripts/config --enable CONFIG_HID_MULTITOUCH
 
     # Network drivers (WiFi, Ethernet — critical for live boot)
+    scripts/config --enable CONFIG_VIRTIO_NET      # virtio NIC — QEMU/KVM/Linode VPS
     scripts/config --module CONFIG_IWLWIFI
     scripts/config --module CONFIG_IWLMVM
     scripts/config --module CONFIG_MT7921E
@@ -175,6 +182,13 @@ prepare() {
     scripts/config --enable CONFIG_WIRELESS
     scripts/config --enable CONFIG_WLAN
     scripts/config --enable CONFIG_RFKILL
+
+    # Serial + virtio console (headless VPS and QEMU serial output)
+    # Without these, all kernel output is invisible on Linode Lish / QEMU serial
+    # and the boot appears completely hung with no diagnostic output.
+    scripts/config --enable CONFIG_SERIAL_8250
+    scripts/config --enable CONFIG_SERIAL_8250_CONSOLE
+    scripts/config --enable CONFIG_VIRTIO_CONSOLE   # Linode Lish + QEMU virtio-console
 
     # Sound (HDA Intel, SOF)
     scripts/config --module CONFIG_SND_HDA_INTEL
@@ -223,6 +237,13 @@ prepare() {
         scripts/config --disable CONFIG_JARVIS_DIBS
         echo "  -> DIBS not found — CONFIG_JARVIS_DIBS disabled"
     fi
+
+    # ZRAM swap — systemd-zram-generator activates /dev/zram0 at boot;
+    # if the module is absent the boot hangs waiting for the device.
+    # ZSMALLOC is zram's memory allocator and must be enabled first.
+    scripts/config --enable CONFIG_ZSMALLOC
+    scripts/config --module CONFIG_ZRAM
+    scripts/config --enable CONFIG_ZRAM_WRITEBACK
 
     # DM integrity + compression crypto — forced after all merges so olddefconfig can't revert them.
     # DM_INTEGRITY depends on BLK_DEV_DM (=y above); CRYPTO_* have no hard deps.
