@@ -1,0 +1,4 @@
+# JarvisOS trusted key fingerprints — one 40-char fingerprint per line (no spaces).
+# Add fingerprints after generating the signing key.
+# Example:
+# ABCDEF0123456789ABCDEF0123456789ABCDEF01

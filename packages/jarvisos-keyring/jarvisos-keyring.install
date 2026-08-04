@@ -1,0 +1,7 @@
+post_install() {
+    pacman-key --populate jarvisos
+}
+
+post_upgrade() {
+    pacman-key --populate jarvisos
+}
