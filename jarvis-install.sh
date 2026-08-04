@@ -1,9 +1,18 @@
 #!/bin/bash
 # ============================================================================
-# jarvis-install — JARVIS OS TUI Installer
+# jarvis-install — JARVIS OS TUI Installer (orchestrator)
 # ============================================================================
 # Launches automatically on TTY1 when booting the live ISO.
 # Run as root:  jarvis-install
+#
+# All install logic lives in iso-build-scripts/tasks/*.sh.
+# This script is the thin TUI shell: collects settings, then calls task scripts.
+#
+# Modes:
+#   (default)           — full TUI install to a disk
+#   --overlay           — install JARVIS stack onto existing running OS
+#   --install-packages  — alias for --overlay
+#   --uninstall / --remove — remove JARVIS components from overlay-installed system
 #
 # Requirements: dialog, parted, dosfstools, arch-install-scripts, gptfdisk, rsync
 # ============================================================================
@@ -29,13 +38,14 @@ ROOT_PASS=""
 IS_EFI=false
 MOUNT_ROOT="/mnt/jarvis-install"
 PARTITION_MODE=""        # "auto" or "manual"
-JARVIS_MODEL="qwen3:4b" # AI model selected during install
-declare -A PART_MOUNT=() # partition dev -> mountpoint
-declare -A PART_FS=()    # partition dev -> filesystem
-declare -A PART_FORMAT=() # partition dev -> "yes"/"no"
+JARVIS_MODEL="qwen3:4b"
+KERNEL_PKG="linux"
+declare -A PART_MOUNT=()
+declare -A PART_FS=()
+declare -A PART_FORMAT=()
 
 # ── Helpers ────────────────────────────────────────────────────────────────
-die() { clear; echo -e "${RED}FATAL: $*${NC}" >&2; exit 1; }
+die()  { clear; echo -e "${RED}FATAL: $*${NC}" >&2; exit 1; }
 info() { echo -e "${BLUE}=>${NC} $*"; }
 ok()   { echo -e "${GREEN}✓${NC} $*"; }
 warn() { echo -e "${YELLOW}⚠${NC} $*"; }
@@ -50,19 +60,120 @@ check_deps() {
         command -v "${cmd}" >/dev/null 2>&1 || missing+=("${cmd}")
     done
     if [ ${#missing[@]} -gt 0 ]; then
-        clear
-        echo "Installing missing tools: ${missing[*]}"
-        pacman -S --noconfirm --needed arch-install-scripts parted dosfstools \
+        info "Installing missing tools: ${missing[*]}"
+        pacman -Sy --noconfirm --needed \
             dialog gptfdisk 2>/dev/null || true
     fi
 }
 
 detect_uefi() {
-    if [ -d /sys/firmware/efi/efivars ]; then
-        IS_EFI=true
-    else
-        IS_EFI=false
+    if [ -d /sys/firmware/efi/efivars ]; then IS_EFI=true; else IS_EFI=false; fi
+}
+
+detect_arch_based() {
+    local id="" id_like=""
+    if [ -f /etc/os-release ]; then
+        id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+        id_like=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"')
     fi
+    case "${id}" in
+        arch|manjaro|endeavouros|garuda|cachyos|artix|parabola|arcolinux|jarvisos) return 0 ;;
+    esac
+    [[ "${id_like}" == *arch* ]] && return 0
+    die "Not an Arch-based system (ID=${id:-unknown}, ID_LIKE=${id_like:-unknown}).\nRun on Arch Linux or an Arch-based distro."
+}
+
+cleanup_mounts() {
+    sync
+    umount -R "${MOUNT_ROOT}" 2>/dev/null || true
+    swapoff -a 2>/dev/null || true
+}
+
+# ── Locate task scripts ────────────────────────────────────────────────────
+_find_tasks_dir() {
+    local _self_dir; _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Pre-seeded in chroot by task-base-install.sh
+    [ -d "/tmp/jarvis-tasks" ] && echo "/tmp/jarvis-tasks" && return 0
+    # Installed on live ISO by 05-bake-installer.sh
+    [ -d "/usr/share/jarvis-install/tasks" ] && echo "/usr/share/jarvis-install/tasks" && return 0
+    # Repo layout (developer / host-install context)
+    for _d in \
+        "${_self_dir}/iso-build-scripts/tasks" \
+        "${_self_dir}/../iso-build-scripts/tasks" \
+        "${_self_dir}/../../iso-build-scripts/tasks"; do
+        [ -d "${_d}" ] && echo "$(realpath "${_d}")" && return 0
+    done
+    return 1
+}
+
+TASKS_DIR=""
+TASKS_DIR=$(_find_tasks_dir || true)
+
+# ── Task runner ────────────────────────────────────────────────────────────
+# Runs a task script from TASKS_DIR with live dialog output.
+# On failure: shows last lines + retry/abort dialog.
+run_task() {
+    local task_name="$1"
+    [ -n "${TASKS_DIR}" ] || die "Cannot find tasks/ directory. Check iso-build-scripts/tasks/ exists."
+    local task_script="${TASKS_DIR}/${task_name}"
+    [ -f "${task_script}" ] || die "Task script not found: ${task_script}"
+
+    local log_file; log_file=$(mktemp /tmp/jarvis-task-XXXXXX.log)
+
+    # Show live task output via dialog tailbox (background)
+    dialog --backtitle "JARVIS OS Installer" \
+           --title " ${task_name%.sh} " \
+           --tailbox "${log_file}" 25 76 &
+    local dlg_pid=$!
+
+    # Run task; all exports already set by caller
+    bash "${task_script}" >> "${log_file}" 2>&1
+    local rc=$?
+
+    sleep 0.3
+    kill "${dlg_pid}" 2>/dev/null; wait "${dlg_pid}" 2>/dev/null || true
+
+    if [ "${rc}" -ne 0 ]; then
+        local last_lines; last_lines=$(tail -15 "${log_file}" | sed 's/\x1b\[[0-9;]*m//g')
+        local response
+        response=$(dialog --backtitle "JARVIS OS Installer" \
+            --title "Task Failed: ${task_name%.sh}" \
+            --menu "${last_lines}\n\nExit code: ${rc}" \
+            24 78 2 \
+            "retry" "Retry this task" \
+            "abort" "Abort installation" \
+            3>&1 1>&2 2>&3) || response="abort"
+        rm -f "${log_file}"
+        case "${response}" in
+            retry) run_task "$@"; return $? ;;
+            *)     die "Installation aborted at task: ${task_name%.sh}" ;;
+        esac
+    fi
+    rm -f "${log_file}"
+}
+
+# ── Serialize associative arrays for manual partition mode ─────────────────
+_write_state_file() {
+    # Writes PART_MOUNT/PART_FS/PART_FORMAT + other state to JARVIS_STATE_FILE
+    # so task-partition.sh can source it.
+    {
+        echo "# jarvis-install state — auto-generated"
+        echo "declare -A PART_MOUNT=()"
+        for k in "${!PART_MOUNT[@]}"; do
+            printf 'PART_MOUNT[%q]=%q\n' "${k}" "${PART_MOUNT[$k]}"
+        done
+        echo "declare -A PART_FS=()"
+        for k in "${!PART_FS[@]}"; do
+            printf 'PART_FS[%q]=%q\n' "${k}" "${PART_FS[$k]}"
+        done
+        echo "declare -A PART_FORMAT=()"
+        for k in "${!PART_FORMAT[@]}"; do
+            printf 'PART_FORMAT[%q]=%q\n' "${k}" "${PART_FORMAT[$k]}"
+        done
+        echo "FS_TYPE=${FS_TYPE}"
+        echo "SWAP_SIZE=${SWAP_SIZE}"
+        echo "KERNEL_PKG=${KERNEL_PKG}"
+    } > "${JARVIS_STATE_FILE}"
 }
 
 # ── Dialog wrappers ────────────────────────────────────────────────────────
@@ -212,7 +323,6 @@ step_select_swap() {
 
 # ── Step 6: Timezone ───────────────────────────────────────────────────────
 step_timezone() {
-    # Build region list from zoneinfo
     local region_items=()
     while IFS= read -r region; do
         region_items+=("${region}" "")
@@ -228,22 +338,15 @@ step_timezone() {
                     "${region_items[@]}" \
                     3>&1 1>&2 2>&3) || { clear; exit 0; }
 
-    if [ "${region}" = "UTC" ]; then
-        TIMEZONE="UTC"
-        return
-    fi
+    if [ "${region}" = "UTC" ]; then TIMEZONE="UTC"; return; fi
 
-    # Build city list for chosen region
     local city_items=()
     while IFS= read -r city; do
         city_items+=("${city}" "")
     done < <(find "/usr/share/zoneinfo/${region}" -type f 2>/dev/null \
              | sed "s|/usr/share/zoneinfo/${region}/||" | sort)
 
-    if [ ${#city_items[@]} -eq 0 ]; then
-        TIMEZONE="${region}"
-        return
-    fi
+    if [ ${#city_items[@]} -eq 0 ]; then TIMEZONE="${region}"; return; fi
 
     local city
     city=$(dialog --clear --backtitle "JARVIS OS Installer" \
@@ -336,9 +439,7 @@ step_user() {
     local pass1 pass2
     while true; do
         pass1=$(d_password "User Password" "Password for ${NEW_USER}:") || { clear; exit 0; }
-        if [ -z "${pass1}" ]; then
-            d_msgbox "Empty" "Password cannot be empty."; continue
-        fi
+        if [ -z "${pass1}" ]; then d_msgbox "Empty" "Password cannot be empty."; continue; fi
         pass2=$(d_password "Confirm Password" "Confirm password:") || { clear; exit 0; }
         [ "${pass1}" = "${pass2}" ] && break
         d_msgbox "Mismatch" "Passwords do not match. Try again."
@@ -348,9 +449,7 @@ step_user() {
     local rp1 rp2
     while true; do
         rp1=$(d_password "Root Password" "Set the root password:") || { clear; exit 0; }
-        if [ -z "${rp1}" ]; then
-            d_msgbox "Empty" "Root password cannot be empty."; continue
-        fi
+        if [ -z "${rp1}" ]; then d_msgbox "Empty" "Root password cannot be empty."; continue; fi
         rp2=$(d_password "Confirm Root Password" "Confirm root password:") || { clear; exit 0; }
         [ "${rp1}" = "${rp2}" ] && break
         d_msgbox "Mismatch" "Passwords do not match. Try again."
@@ -530,7 +629,6 @@ step_manual_assign() {
 
         PART_MOUNT["${part}"]="${mountpt}"
 
-        # Pick filesystem
         if [ "${mountpt}" = "swap" ]; then
             PART_FS["${part}"]="swap"
             local fmt_choice
@@ -540,9 +638,6 @@ step_manual_assign() {
                 || { clear; exit 0; }
             PART_FORMAT["${part}"]="${fmt_choice}"
         else
-            local fs_hint="ext4"
-            [ "${mountpt}" = "/boot" ] && $IS_EFI && fs_hint="fat32"
-
             local chosen_fs
             chosen_fs=$(dialog --clear --backtitle "JARVIS OS Installer" \
                 --title "Filesystem — ${part} → ${mountpt}" \
@@ -598,1746 +693,7 @@ step_manual_swap() {
     SWAP_SIZE="${choice}"
 }
 
-# ── Manual: format one partition ──────────────────────────────────────────
-_format_part() {
-    local dev="$1" fs="$2" label="${3:-DATA}"
-    label="${label//\//-}"; label="${label#-}"
-    case "${fs}" in
-        ext4)  mkfs.ext4  -F   -L "JARVIS-${label}" "${dev}" >/dev/null ;;
-        btrfs) mkfs.btrfs -f   -L "JARVIS-ROOT"     "${dev}" >/dev/null ;;
-        xfs)   mkfs.xfs   -f   -L "JARVIS-${label}" "${dev}" >/dev/null ;;
-        fat32) mkfs.fat   -F32 -n "JARVIS-EFI"      "${dev}" >/dev/null ;;
-        swap)  mkswap "${dev}" >/dev/null ;;
-        keep)  : ;;
-    esac
-}
-
-# ── Manual: format and mount all assigned partitions ──────────────────────
-manual_format_and_mount() {
-    mkdir -p "${MOUNT_ROOT}"
-
-    # Find root partition
-    local root_dev=""
-    for part in "${!PART_MOUNT[@]}"; do
-        [ "${PART_MOUNT[$part]}" = "/" ] && root_dev="${part}" && break
-    done
-    [ -z "${root_dev}" ] && die "No root partition assigned."
-
-    local root_fs="${PART_FS[$root_dev]}"
-    FS_TYPE="${root_fs}"
-    [ "${FS_TYPE}" = "keep" ] && FS_TYPE="ext4"
-
-    # Format + mount root
-    [ "${PART_FORMAT[$root_dev]}" = "yes" ] && _format_part "${root_dev}" "${root_fs}" "ROOT"
-
-    if [ "${root_fs}" = "btrfs" ] && [ "${PART_FORMAT[$root_dev]}" = "yes" ]; then
-        mount "${root_dev}" "${MOUNT_ROOT}"
-        btrfs subvolume create "${MOUNT_ROOT}/@"
-        btrfs subvolume create "${MOUNT_ROOT}/@home"
-        btrfs subvolume create "${MOUNT_ROOT}/@var"
-        btrfs subvolume create "${MOUNT_ROOT}/@snapshots"
-        umount "${MOUNT_ROOT}"
-        mount -o compress=zstd,noatime,subvol=@ "${root_dev}" "${MOUNT_ROOT}"
-        mkdir -p "${MOUNT_ROOT}"/{home,var,.snapshots}
-        mount -o compress=zstd,noatime,subvol=@home "${root_dev}" "${MOUNT_ROOT}/home"
-        mount -o compress=zstd,noatime,subvol=@var  "${root_dev}" "${MOUNT_ROOT}/var"
-        mount -o compress=zstd,noatime,subvol=@snapshots "${root_dev}" "${MOUNT_ROOT}/.snapshots"
-    else
-        mount "${root_dev}" "${MOUNT_ROOT}"
-    fi
-
-    # Build sorted list of non-root, non-swap mounts
-    local entries=()
-    for part in "${!PART_MOUNT[@]}"; do
-        local mnt="${PART_MOUNT[$part]}"
-        [ "${mnt}" = "/"    ] && continue
-        [ "${mnt}" = "swap" ] && continue
-        # Skip btrfs subvols already mounted
-        if [ "${root_fs}" = "btrfs" ] && [ "${PART_FORMAT[$root_dev]}" = "yes" ]; then
-            [[ "${mnt}" == "/home" || "${mnt}" == "/var" ]] && continue
-        fi
-        entries+=("${mnt}:${part}")
-    done
-
-    # Sort by mount depth (number of slashes)
-    local sorted=()
-    if [ ${#entries[@]} -gt 0 ]; then
-        mapfile -t sorted < <(printf '%s\n' "${entries[@]}" \
-            | awk -F: '{n=split($1,a,"/"); print n":"$0}' \
-            | sort -n | sed 's/^[0-9]*://')
-    fi
-
-    for entry in "${sorted[@]}"; do
-        local mnt="${entry%%:*}"
-        local dev="${entry##*:}"
-        local fs="${PART_FS[$dev]}"
-        mkdir -p "${MOUNT_ROOT}${mnt}"
-        [ "${PART_FORMAT[$dev]}" = "yes" ] && _format_part "${dev}" "${fs}" "${mnt#/}"
-        mount "${dev}" "${MOUNT_ROOT}${mnt}"
-    done
-
-    # Swap partitions
-    for part in "${!PART_MOUNT[@]}"; do
-        if [ "${PART_MOUNT[$part]}" = "swap" ]; then
-            [ "${PART_FORMAT[$part]}" = "yes" ] && mkswap "${part}" >/dev/null
-            swapon "${part}"
-        fi
-    done
-
-    ok "Partitions formatted and mounted"
-}
-
-# ── Partitioning ───────────────────────────────────────────────────────────
-partition_disk() {
-    wipefs -af "${TARGET_DISK}" >/dev/null 2>&1 || true
-    sgdisk --zap-all "${TARGET_DISK}" >/dev/null 2>&1 || true
-
-    if $IS_EFI; then
-        parted -s "${TARGET_DISK}" mklabel gpt
-        parted -s "${TARGET_DISK}" mkpart ESP fat32 1MiB 1025MiB
-        parted -s "${TARGET_DISK}" set 1 esp on
-
-        if [ "${SWAP_SIZE}" != "0" ] && [ "${SWAP_SIZE}" != "file" ]; then
-            local swap_end=$(( 1025 + SWAP_SIZE ))
-            parted -s "${TARGET_DISK}" mkpart swap linux-swap 1025MiB "${swap_end}MiB"
-            parted -s "${TARGET_DISK}" mkpart root "${FS_TYPE}" "${swap_end}MiB" 100%
-        else
-            parted -s "${TARGET_DISK}" mkpart root "${FS_TYPE}" 1025MiB 100%
-        fi
-    else
-        parted -s "${TARGET_DISK}" mklabel msdos
-        parted -s "${TARGET_DISK}" mkpart primary 1MiB 3MiB
-        parted -s "${TARGET_DISK}" set 1 bios_grub on
-
-        if [ "${SWAP_SIZE}" != "0" ] && [ "${SWAP_SIZE}" != "file" ]; then
-            local swap_end=$(( 3 + SWAP_SIZE ))
-            parted -s "${TARGET_DISK}" mkpart primary linux-swap 3MiB "${swap_end}MiB"
-            parted -s "${TARGET_DISK}" mkpart primary ext4 "${swap_end}MiB" 100%
-            parted -s "${TARGET_DISK}" set 3 boot on
-        else
-            parted -s "${TARGET_DISK}" mkpart primary ext4 3MiB 100%
-            parted -s "${TARGET_DISK}" set 2 boot on
-        fi
-    fi
-
-    partprobe "${TARGET_DISK}" 2>/dev/null || true
-    sleep 2
-    ok "Disk partitioned"
-}
-
-# Derive partition names (handles nvme0n1p1, mmcblk0p1, sda1)
-part() {
-    local disk="$1" num="$2"
-    if echo "${disk}" | grep -qE '(nvme|mmcblk)'; then
-        echo "${disk}p${num}"
-    else
-        echo "${disk}${num}"
-    fi
-}
-
-format_and_mount() {
-    mkdir -p "${MOUNT_ROOT}"
-
-    if $IS_EFI; then
-        local esp_dev
-        esp_dev=$(part "${TARGET_DISK}" 1)
-        mkfs.fat -F32 -n JARVIS-EFI "${esp_dev}" >/dev/null
-
-        if [ "${SWAP_SIZE}" != "0" ] && [ "${SWAP_SIZE}" != "file" ]; then
-            local swap_dev root_dev
-            swap_dev=$(part "${TARGET_DISK}" 2)
-            root_dev=$(part "${TARGET_DISK}" 3)
-            mkswap "${swap_dev}" && swapon "${swap_dev}"
-            format_root "${root_dev}"
-            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
-            mkdir -p "${MOUNT_ROOT}/boot"
-            mount "${esp_dev}" "${MOUNT_ROOT}/boot"
-        else
-            local root_dev
-            root_dev=$(part "${TARGET_DISK}" 2)
-            format_root "${root_dev}"
-            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
-            mkdir -p "${MOUNT_ROOT}/boot"
-            mount "${esp_dev}" "${MOUNT_ROOT}/boot"
-        fi
-    else
-        if [ "${SWAP_SIZE}" != "0" ] && [ "${SWAP_SIZE}" != "file" ]; then
-            local swap_dev root_dev
-            swap_dev=$(part "${TARGET_DISK}" 2)
-            root_dev=$(part "${TARGET_DISK}" 3)
-            mkswap "${swap_dev}" && swapon "${swap_dev}"
-            format_root "${root_dev}"
-            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
-        else
-            local root_dev
-            root_dev=$(part "${TARGET_DISK}" 2)
-            format_root "${root_dev}"
-            [ "${FS_TYPE}" != "btrfs" ] && mount "${root_dev}" "${MOUNT_ROOT}"
-        fi
-    fi
-
-    ok "Partitions formatted and mounted"
-}
-
-format_root() {
-    local dev="$1"
-    case "${FS_TYPE}" in
-        ext4)
-            mkfs.ext4 -L JARVISOS-ROOT "${dev}" >/dev/null
-            ;;
-        btrfs)
-            mkfs.btrfs -L JARVISOS-ROOT -f "${dev}" >/dev/null
-            mount "${dev}" "${MOUNT_ROOT}"
-            btrfs subvolume create "${MOUNT_ROOT}/@"
-            btrfs subvolume create "${MOUNT_ROOT}/@home"
-            btrfs subvolume create "${MOUNT_ROOT}/@var"
-            btrfs subvolume create "${MOUNT_ROOT}/@snapshots"
-            umount "${MOUNT_ROOT}"
-            mount -o compress=zstd,noatime,subvol=@ "${dev}" "${MOUNT_ROOT}"
-            mkdir -p "${MOUNT_ROOT}"/{home,var,.snapshots}
-            mount -o compress=zstd,noatime,subvol=@home "${dev}" "${MOUNT_ROOT}/home"
-            mount -o compress=zstd,noatime,subvol=@var  "${dev}" "${MOUNT_ROOT}/var"
-            mount -o compress=zstd,noatime,subvol=@snapshots "${dev}" "${MOUNT_ROOT}/.snapshots"
-            return
-            ;;
-        *)
-            die "Unknown filesystem: ${FS_TYPE}"
-            ;;
-    esac
-}
-
-
-# ── Install system ─────────────────────────────────────────────────────────
-install_system() {
-    clear
-    echo ""
-    echo -e "${BOLD}${CYAN}  ╔══════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}  ║      Installing JARVIS OS                    ║${NC}"
-    echo -e "${BOLD}${CYAN}  ╚══════════════════════════════════════════════╝${NC}"
-    echo ""
-
-    # ── Internet check ────────────────────────────────────────────────────
-    info "Checking internet connectivity..."
-    if ! ping -c1 -W5 archlinux.org >/dev/null 2>&1 && \
-       ! ping -c1 -W5 8.8.8.8 >/dev/null 2>&1; then
-        die "No internet connection. Connect to network before installing."
-    fi
-    ok "Internet connected"
-
-    # ── Sync clock ────────────────────────────────────────────────────────
-    info "Syncing system clock..."
-    timedatectl set-ntp true 2>/dev/null || true
-
-    # ── Detect CPU microcode ──────────────────────────────────────────────
-    local _ucode=""
-    if grep -q "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
-        _ucode="intel-ucode"
-    elif grep -q "AuthenticAMD" /proc/cpuinfo 2>/dev/null; then
-        _ucode="amd-ucode"
-    fi
-    [ -n "${_ucode}" ] && info "CPU microcode: ${_ucode}"
-
-    # ── Bootstrap base Arch system ────────────────────────────────────────
-    info "Bootstrapping base system via pacstrap (needs internet)..."
-    echo ""
-    pacstrap -K "${MOUNT_ROOT}" \
-        base base-devel linux linux-firmware \
-        sudo nano vim wget curl git openssh \
-        networkmanager wpa_supplicant wireless-regdb \
-        arch-install-scripts dialog \
-        ${_ucode:+"${_ucode}"} \
-        || die "pacstrap failed — check network and /etc/pacman.d/mirrorlist"
-    echo ""
-    ok "Base system installed"
-
-    # ── Copy mirrorlist from live ISO into target ─────────────────────────
-    cp /etc/pacman.d/mirrorlist "${MOUNT_ROOT}/etc/pacman.d/mirrorlist" 2>/dev/null || true
-
-    # ── Copy installer into chroot, run --overlay to install JARVIS stack ─
-    local _self; _self="$(realpath "${BASH_SOURCE[0]}")"
-    cp "${_self}" "${MOUNT_ROOT}/tmp/jarvis-install"
-    chmod +x "${MOUNT_ROOT}/tmp/jarvis-install"
-
-    # Pre-seed JARVIS source from live ISO so --overlay doesn't need GitHub
-    if [ -d /usr/lib/jarvis ] && [ -n "$(ls -A /usr/lib/jarvis 2>/dev/null)" ]; then
-        info "Copying JARVIS source from live ISO into target..."
-        mkdir -p "${MOUNT_ROOT}/usr/lib/jarvis"
-        cp -r /usr/lib/jarvis/. "${MOUNT_ROOT}/usr/lib/jarvis/"
-    fi
-
-    # Pre-seed linux-jarvisos packages into chroot so --overlay's
-    # _install_linux_jarvisos() can find them at /opt/jarvis-kernel-pkg.
-    # Without this, BASH_SOURCE[0]=/tmp/jarvis-install → relative paths
-    # resolve to /build/kernel-pkg which doesn't exist inside the chroot.
-    if [ -d /opt/jarvis-kernel-pkg ] && \
-       find /opt/jarvis-kernel-pkg -name 'linux-jarvisos-*.pkg.tar.zst' -quit 2>/dev/null | grep -q .; then
-        info "Staging linux-jarvisos packages into target for --overlay..."
-        mkdir -p "${MOUNT_ROOT}/opt/jarvis-kernel-pkg"
-        cp /opt/jarvis-kernel-pkg/linux-jarvisos-*.pkg.tar.zst "${MOUNT_ROOT}/opt/jarvis-kernel-pkg/"
-    fi
-
-    # Ensure DNS works inside the chroot for pacman and curl downloads.
-    # configure_system() sets up the symlink later; copy the real file now.
-    cp --dereference /etc/resolv.conf "${MOUNT_ROOT}/etc/resolv.conf" 2>/dev/null || true
-
-    # Pass model selection into the chroot so install_packages_mode() can use it
-    printf '%s\n' "${JARVIS_MODEL:-qwen3:4b}" > "${MOUNT_ROOT}/tmp/.jarvis-model-choice"
-
-    info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
-    echo ""
-    arch-chroot "${MOUNT_ROOT}" bash /tmp/jarvis-install --overlay \
-        || die "JARVIS component install failed"
-
-    rm -f "${MOUNT_ROOT}/tmp/jarvis-install" "${MOUNT_ROOT}/tmp/.jarvis-model-choice"
-    rm -rf "${MOUNT_ROOT}/opt/jarvis-kernel-pkg" 2>/dev/null || true
-    ok "JARVIS OS components installed"
-}
-
-# ── Kernel selection ───────────────────────────────────────────────────────
-# linux is already installed by pacstrap. Attempt linux-jarvisos if pre-built
-# packages exist. Checks multiple candidate locations:
-#   1. /opt/jarvis-kernel-pkg/ — copied into live ISO by 05-bake-installer.sh
-#   2. Relative to installer script (dev/host installs)
-ensure_kernel() {
-    KERNEL_PKG="linux"
-
-    # --overlay phase runs pacman -U linux-jarvisos inside the chroot before we
-    # get here.  Reinstalling would re-trigger the .install mkinitcpio call which
-    # fails on archiso hooks and makes the && chain not set KERNEL_PKG.
-    if arch-chroot "${MOUNT_ROOT}" pacman -Q linux-jarvisos >/dev/null 2>&1; then
-        ok "linux-jarvisos already installed (overlay phase)"
-        KERNEL_PKG="linux-jarvisos"
-        return 0
-    fi
-
-    local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local _pkg_dir=""
-    local _candidate
-    for _candidate in \
-        "/opt/jarvis-kernel-pkg" \
-        "${_script_dir}/../../build/kernel-pkg" \
-        "${_script_dir}/../build/kernel-pkg"; do
-        if [ -d "${_candidate}" ] && \
-           find "${_candidate}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-               ! -name 'linux-jarvisos-headers-*' -quit 2>/dev/null | grep -q .; then
-            _pkg_dir="${_candidate}"
-            break
-        fi
-    done
-
-    [ -z "${_pkg_dir}" ] && { info "No pre-built linux-jarvisos found — using stock linux kernel"; return 0; }
-
-    local _pkg; _pkg=$(find "${_pkg_dir}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-                        ! -name 'linux-jarvisos-headers-*' 2>/dev/null \
-                        | sort -V | tail -1 || true)
-    local _hdr; _hdr=$(find "${_pkg_dir}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
-                        2>/dev/null | sort -V | tail -1 || true)
-
-    if [ -n "${_pkg}" ] && [ -n "${_hdr}" ]; then
-        info "Found pre-built linux-jarvisos — installing into target..."
-        cp "${_pkg}" "${_hdr}" "${MOUNT_ROOT}/tmp/"
-        arch-chroot "${MOUNT_ROOT}" pacman -U --noconfirm \
-            "/tmp/$(basename "${_pkg}")" "/tmp/$(basename "${_hdr}")" \
-            && ok "linux-jarvisos installed" && KERNEL_PKG="linux-jarvisos" \
-            || warn "linux-jarvisos install failed — using stock linux kernel"
-        rm -f "${MOUNT_ROOT}/tmp/"linux-jarvisos*.pkg.tar.zst 2>/dev/null || true
-    else
-        info "No pre-built linux-jarvisos found — using stock linux kernel"
-    fi
-}
-
-# ── fstab ──────────────────────────────────────────────────────────────────
-generate_fstab() {
-    mkdir -p "${MOUNT_ROOT}/etc"
-    genfstab -U "${MOUNT_ROOT}" > "${MOUNT_ROOT}/etc/fstab"
-    ok "fstab generated"
-}
-
-# ── Configure installed system ─────────────────────────────────────────────
-configure_system() {
-    arch-chroot "${MOUNT_ROOT}" /bin/bash -s \
-        "${HOSTNAME_VAL}" "${NEW_USER}" "${USER_PASS}" "${ROOT_PASS}" \
-        "${BOOT_LOADER}" "${FS_TYPE}" "${TIMEZONE}" "${KEYMAP}" "${LOCALE}" \
-        "${KERNEL_PKG:-linux}" <<'CHROOT_EOF'
-set -euo pipefail
-
-HOSTNAME_VAL="$1"
-NEW_USER="$2"
-USER_PASS="$3"
-ROOT_PASS="$4"
-BOOT_LOADER="$5"
-FS_TYPE="$6"
-TIMEZONE="$7"
-KEYMAP="$8"
-LOCALE="$9"
-KERNEL_PKG="${10:-linux}"
-
-warn() { echo "WARNING: $*" >&2; }
-
-# Timezone
-if [ "${TIMEZONE}" = "UTC" ]; then
-    ln -sf /usr/share/zoneinfo/UTC /etc/localtime
-elif [ -f "/usr/share/zoneinfo/${TIMEZONE}" ]; then
-    ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
-else
-    warn "Timezone ${TIMEZONE} not found — defaulting to UTC"
-    ln -sf /usr/share/zoneinfo/UTC /etc/localtime
-fi
-timedatectl set-ntp true 2>/dev/null || true
-hwclock --systohc 2>/dev/null || true
-
-# Locale
-LOCALE_BASE=$(echo "${LOCALE}" | cut -d' ' -f1)
-LOCALE_ESC="${LOCALE_BASE//./\\.}"
-sed -i "s/^#\(${LOCALE_ESC}\)/\1/" /etc/locale.gen 2>/dev/null || true
-# Also ensure en_US is generated if a different locale is chosen
-grep -q "^en_US\.UTF-8" /etc/locale.gen 2>/dev/null || \
-    sed -i 's/^#\(en_US\.UTF-8\)/\1/' /etc/locale.gen 2>/dev/null || true
-locale-gen
-echo "LANG=${LOCALE_BASE}" > /etc/locale.conf
-
-# Keyboard
-echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
-
-# Hostname
-echo "${HOSTNAME_VAL}" > /etc/hostname
-cat > /etc/hosts << EOF
-127.0.0.1   localhost
-::1         localhost
-127.0.1.1   ${HOSTNAME_VAL}.localdomain ${HOSTNAME_VAL}
-EOF
-
-# Root password
-printf '%s:%s\n' "root" "${ROOT_PASS}" | chpasswd
-
-# User setup
-for grp in wheel audio video storage optical network power lp sys scanner input jarvis; do
-    getent group "${grp}" >/dev/null 2>&1 || groupadd --system "${grp}" 2>/dev/null || true
-done
-
-useradd -m -G wheel,audio,video,storage,optical,network,power,jarvis -s /bin/bash "${NEW_USER}" 2>/dev/null || \
-    useradd -m -s /bin/bash "${NEW_USER}"
-
-for grp in wheel audio video storage optical network power lp sys scanner input jarvis; do
-    usermod -aG "${grp}" "${NEW_USER}" 2>/dev/null || true
-done
-
-printf '%s:%s\n' "${NEW_USER}" "${USER_PASS}" | chpasswd
-
-# sudoers
-sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers 2>/dev/null || \
-    sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/'     /etc/sudoers 2>/dev/null || true
-chmod 440 /etc/sudoers
-
-# Remove live autologin config and TTY1 override
-rm -f /etc/sddm.conf.d/autologin.conf 2>/dev/null || true
-rm -rf /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
-rm -f /root/.bash_profile 2>/dev/null || true
-
-# SDDM config for installed system
-mkdir -p /etc/sddm.conf.d
-cat > /etc/sddm.conf.d/jarvisos.conf << SDDM
-[General]
-DisplayServer=wayland
-Numlock=on
-
-[Wayland]
-SessionCommand=/usr/share/sddm/scripts/wayland-session
-SessionDir=/usr/share/wayland-sessions
-SDDM
-
-# Remove liveuser account
-userdel -r liveuser 2>/dev/null || true
-rm -rf /home/liveuser 2>/dev/null || true
-rm -f /etc/polkit-1/rules.d/50-liveuser.rules 2>/dev/null || true
-
-# Fix mkinitcpio.conf for installed system
-# Remove archiso/memdisk live hooks; add block+filesystems for real boot
-sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap block filesystems fsck)/' \
-    /etc/mkinitcpio.conf
-
-# mkinitcpio
-if [ "${KERNEL_PKG}" = "linux-jarvisos" ]; then
-    # Remove stock linux files — linux-jarvisos is the installed kernel
-    rm -f /boot/vmlinuz-linux /boot/initramfs-linux.img /boot/initramfs-linux-fallback.img
-    rm -f /etc/mkinitcpio.d/linux.preset 2>/dev/null || true
-    if [ -f /etc/mkinitcpio.d/linux-jarvisos.preset ]; then
-        mkinitcpio -p linux-jarvisos || warn "mkinitcpio failed — check manually after install"
-    elif [ -f /boot/initramfs-linux-jarvisos.img ]; then
-        # initramfs present but preset missing — the file was copied from the live
-        # medium and was built with archiso hooks (not block/filesystems).
-        # The installed system will NOT boot from it.  Re-generate using the
-        # kernel version string found in /usr/lib/modules/.
-        warn "linux-jarvisos.preset missing — rebuilding initramfs directly"
-        _kver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
-        if [ -n "${_kver}" ]; then
-            mkinitcpio -k "${_kver}" -g /boot/initramfs-linux-jarvisos.img \
-                || warn "mkinitcpio failed — check /boot/ manually after install"
-        else
-            warn "Cannot find linux-jarvisos modules in /usr/lib/modules/ — installed system may not boot"
-        fi
-    else
-        warn "No linux-jarvisos kernel or preset found — bootloader will not work"
-    fi
-else
-    # Stock linux kernel fallback — keep vmlinuz-linux and linux.preset
-    if [ -f /etc/mkinitcpio.d/linux.preset ]; then
-        mkinitcpio -p linux || warn "mkinitcpio failed"
-    fi
-fi
-
-# Ensure jarvis.ko auto-loads at boot via systemd-modules-load.
-# Needed because pre-built packages may pre-date the modules-load.d addition
-# in PKGBUILD, and post_install() mkinitcpio may fail with archiso hooks.
-_jkver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
-[ -n "${_jkver}" ] && depmod -a "${_jkver}" 2>/dev/null || true
-mkdir -p /usr/lib/modules-load.d
-printf 'jarvis\n' > /usr/lib/modules-load.d/jarvis.conf
-
-# Enable services
-systemctl enable NetworkManager.service              2>/dev/null || true
-systemctl enable systemd-resolved.service            2>/dev/null || true
-systemctl enable sddm.service                        2>/dev/null || true
-systemctl enable bluetooth.service                   2>/dev/null || true
-systemctl enable rtkit-daemon.service                2>/dev/null || true
-systemctl enable ollama.service                      2>/dev/null || true
-systemctl enable jarvis.service                      2>/dev/null || true
-systemctl enable jarvis-setup.service                2>/dev/null || true
-systemctl disable iwd.service                        2>/dev/null || true
-systemctl mask    iwd.service                        2>/dev/null || true
-systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
-
-# resolv.conf
-rm -f /etc/resolv.conf
-ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-
-# XDG user dirs
-if command -v xdg-user-dirs-update >/dev/null 2>&1; then
-    runuser -u "${NEW_USER}" -- xdg-user-dirs-update 2>/dev/null || true
-fi
-
-# JARVIS welcome autostart for new user (runs on first login)
-AUTOSTART_DIR="/home/${NEW_USER}/.config/autostart"
-mkdir -p "${AUTOSTART_DIR}"
-cat > "${AUTOSTART_DIR}/jarvis-welcome.desktop" << JDESKTOP
-[Desktop Entry]
-Type=Application
-Name=JARVIS Setup
-Comment=First-boot JARVIS AI setup wizard
-Exec=konsole -e /usr/local/bin/jarvis-welcome.sh
-Icon=utilities-terminal
-Terminal=false
-StartupNotify=true
-X-KDE-autostart-phase=2
-JDESKTOP
-chmod 644 "${AUTOSTART_DIR}/jarvis-welcome.desktop"
-chown -R "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/.config" 2>/dev/null || true
-
-# btrfs fstab options
-if [ "${FS_TYPE}" = "btrfs" ]; then
-    sed -i 's|subvol=@,|compress=zstd,noatime,subvol=@,|' /etc/fstab 2>/dev/null || true
-fi
-
-echo "System configuration complete."
-CHROOT_EOF
-
-    ok "System configured"
-}
-
-# ── Bootloader ─────────────────────────────────────────────────────────────
-install_bootloader() {
-    info "Installing ${BOOT_LOADER}..."
-
-    # Determine which kernel to boot
-    local KERN_VMLINUZ KERN_INITRD KERN_INITRD_FB
-    if [ -f "${MOUNT_ROOT}/boot/vmlinuz-linux-jarvisos" ]; then
-        KERN_VMLINUZ="vmlinuz-linux-jarvisos"
-        KERN_INITRD="initramfs-linux-jarvisos.img"
-        KERN_INITRD_FB="initramfs-linux-jarvisos-fallback.img"
-    else
-        KERN_VMLINUZ="vmlinuz-linux"
-        KERN_INITRD="initramfs-linux.img"
-        KERN_INITRD_FB="initramfs-linux-fallback.img"
-    fi
-
-    if [ "${BOOT_LOADER}" = "systemd-boot" ]; then
-        arch-chroot "${MOUNT_ROOT}" bootctl --esp-path=/boot install \
-            || die "bootctl install failed — EFI partition may not be mounted at /boot"
-
-        cat > "${MOUNT_ROOT}/boot/loader/loader.conf" << 'LCONF'
-default jarvisos.conf
-timeout 5
-console-mode max
-editor no
-LCONF
-
-        mkdir -p "${MOUNT_ROOT}/boot/loader/entries"
-        local ROOT_UUID
-        ROOT_UUID=$(blkid -s UUID -o value \
-            "$(findmnt -n -o SOURCE "${MOUNT_ROOT}" 2>/dev/null)" 2>/dev/null || \
-            blkid -s UUID -o value \
-            "$(mount | grep " ${MOUNT_ROOT} " | awk '{print $1}')" 2>/dev/null || true)
-        [ -z "${ROOT_UUID}" ] && die "Cannot determine root partition UUID — run blkid manually and check ${MOUNT_ROOT} is mounted"
-
-        local FS_OPTS="rw quiet splash"
-        [ "${FS_TYPE}" = "btrfs" ] && FS_OPTS="rw quiet splash rootflags=subvol=@"
-
-        local UCODE_LINES=""
-        [ -f "${MOUNT_ROOT}/boot/intel-ucode.img" ] && UCODE_LINES+=$'initrd  /intel-ucode.img\n'
-        [ -f "${MOUNT_ROOT}/boot/amd-ucode.img"   ] && UCODE_LINES+=$'initrd  /amd-ucode.img\n'
-
-        printf "title   JARVIS OS\nlinux   /%s\n%sinitrd  /%s\noptions root=UUID=%s %s\n" \
-            "${KERN_VMLINUZ}" "${UCODE_LINES}" "${KERN_INITRD}" "${ROOT_UUID}" "${FS_OPTS}" \
-            > "${MOUNT_ROOT}/boot/loader/entries/jarvisos.conf"
-
-        printf "title   JARVIS OS (fallback)\nlinux   /%s\n%sinitrd  /%s\noptions root=UUID=%s %s\n" \
-            "${KERN_VMLINUZ}" "${UCODE_LINES}" "${KERN_INITRD_FB}" "${ROOT_UUID}" "${FS_OPTS}" \
-            > "${MOUNT_ROOT}/boot/loader/entries/jarvisos-fallback.conf"
-
-        ok "systemd-boot installed"
-    else
-        if $IS_EFI; then
-            arch-chroot "${MOUNT_ROOT}" grub-install \
-                --target=x86_64-efi \
-                --efi-directory=/boot \
-                --bootloader-id=JARVISOS \
-                --recheck \
-                || die "grub-install (EFI) failed — check EFI partition and grub package"
-        else
-            arch-chroot "${MOUNT_ROOT}" grub-install \
-                --target=i386-pc \
-                --recheck \
-                "${TARGET_DISK}" \
-                || die "grub-install (BIOS) failed — check disk and grub package"
-        fi
-
-        sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=5/' \
-            "${MOUNT_ROOT}/etc/default/grub" 2>/dev/null || true
-        sed -i 's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=menu/' \
-            "${MOUNT_ROOT}/etc/default/grub" 2>/dev/null || true
-
-        arch-chroot "${MOUNT_ROOT}" grub-mkconfig -o /boot/grub/grub.cfg \
-            || die "grub-mkconfig failed — installed system will not boot"
-
-        ok "GRUB installed"
-    fi
-}
-
-# ── Swap file ──────────────────────────────────────────────────────────────
-create_swapfile() {
-    if [ "${SWAP_SIZE}" = "file" ]; then
-        info "Creating 4 GiB swap file..."
-        if [ "${FS_TYPE}" = "btrfs" ]; then
-            arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
-                set -e
-                truncate -s 0 /swapfile
-                chattr +C /swapfile
-                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
-                chmod 600 /swapfile
-                mkswap /swapfile
-                swapon /swapfile
-            " || warn "btrfs swapfile setup failed — add swap manually after boot"
-        else
-            arch-chroot "${MOUNT_ROOT}" /bin/bash -c "
-                set -e
-                dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
-                chmod 600 /swapfile
-                mkswap /swapfile
-                swapon /swapfile
-            " || warn "Swapfile setup failed — add swap manually after boot"
-        fi
-        echo "/swapfile none swap defaults 0 0" >> "${MOUNT_ROOT}/etc/fstab"
-        ok "Swap file created"
-    fi
-}
-
-# ── Cleanup ────────────────────────────────────────────────────────────────
-cleanup_mounts() {
-    sync
-    umount -R "${MOUNT_ROOT}" 2>/dev/null || true
-    swapoff -a 2>/dev/null || true
-}
-
-# ── Detect Arch-based distro ───────────────────────────────────────────────
-detect_arch_based() {
-    local id="" id_like=""
-    if [ -f /etc/os-release ]; then
-        id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-        id_like=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"')
-    fi
-    case "${id}" in
-        arch|manjaro|endeavouros|garuda|cachyos|artix|parabola|arcolinux|jarvisos) return 0 ;;
-    esac
-    [[ "${id_like}" == *arch* ]] && return 0
-    die "Not an Arch-based system (ID=${id:-unknown}, ID_LIKE=${id_like:-unknown}).\nRun on Arch Linux or an Arch-based distro."
-}
-
-# ── Find JARVIS source code ────────────────────────────────────────────────
-find_jarvis_source() {
-    [ -f /usr/lib/jarvis/main.py ] && echo "installed" && return 0
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local try="${script_dir}/../../Project-JARVIS"
-    [ -f "${try}/jarvis/main.py" ] && echo "$(realpath "${try}")" && return 0
-    echo ""
-    return 1
-}
-
-# ── GPU vendor detection ──────────────────────────────────────────────────
-# Returns: "nvidia", "amd", "intel-arc", or "cpu"
-_detect_gpu_vendor() {
-    if lspci 2>/dev/null | grep -qi 'nvidia' || \
-       lsmod 2>/dev/null | grep -q '^nvidia '; then
-        echo "nvidia"; return
-    fi
-    if lsmod 2>/dev/null | grep -q '^amdgpu ' || \
-       lspci 2>/dev/null | grep -qi 'radeon\|amdgpu\|Advanced Micro Devices.*Navi\|Advanced Micro Devices.*Ellesmere\|Advanced Micro Devices.*Polaris'; then
-        echo "amd"; return
-    fi
-    if lspci 2>/dev/null | grep -qi 'Intel.*Arc\|Arc.*Graphics\|Intel.*Alchemist\|Intel.*Battlemage'; then
-        echo "intel-arc"; return
-    fi
-    echo "cpu"
-}
-
-# ── Install Ollama via pacman with GPU-appropriate variant and drivers ────
-_install_ollama_gpu() {
-    local gpu; gpu=$(_detect_gpu_vendor)
-    info "GPU detected: ${gpu} — selecting Ollama variant"
-
-    case "${gpu}" in
-        nvidia)
-            info "Installing ollama-cuda + NVIDIA drivers + CUDA..."
-            pacman -S --noconfirm --needed \
-                ollama-cuda \
-                nvidia-dkms \
-                nvidia-utils \
-                dkms \
-                cuda \
-                || warn "Some NVIDIA/CUDA packages failed — check AUR or driver availability"
-            ok "Ollama installed with NVIDIA CUDA support"
-            ;;
-        amd)
-            info "Installing ollama-rocm + ROCm runtime..."
-            pacman -S --noconfirm --needed \
-                ollama-rocm \
-                rocm-hip-runtime \
-                rocm-opencl-runtime \
-                rocm-device-libs \
-                || warn "Some ROCm packages failed — check repo availability"
-            getent group render >/dev/null 2>&1 && usermod -aG render ollama 2>/dev/null || true
-            usermod -aG video ollama 2>/dev/null || true
-            ok "Ollama installed with AMD ROCm support"
-            ;;
-        intel-arc)
-            info "Installing ollama-vulkan + Intel Arc compute runtime..."
-            pacman -S --noconfirm --needed \
-                ollama-vulkan \
-                vulkan-intel \
-                intel-compute-runtime \
-                level-zero-loader \
-                intel-media-driver \
-                || warn "Some Intel Arc packages failed — check repo availability"
-            ok "Ollama installed with Intel Arc Vulkan support"
-            ;;
-        cpu|*)
-            info "No dedicated GPU detected — installing ollama (CPU mode)..."
-            pacman -S --noconfirm --needed ollama \
-                || warn "ollama install failed"
-            ok "Ollama installed (CPU mode)"
-            ;;
-    esac
-}
-
-# ── Install JARVIS OS components on existing Arch system ───────────────────
-install_packages_mode() {
-    trap 'echo "JARVIS overlay failed at line $LINENO: $BASH_COMMAND" >&2' ERR
-    if [ "$(id -u)" -ne 0 ]; then
-        echo "Root required — re-launching with sudo (JARVIS stack install needs pacman, systemctl, etc.)"
-        exec sudo bash "${BASH_SOURCE[0]}" "${OVERLAY_MODE:---install-packages}"
-    fi
-    detect_arch_based
-
-    # ── Ensure all host tools needed for this install are present ────────
-    # Runs before anything else — including dialog — so missing tools never
-    # cause a silent failure mid-install. pacman -Sy first so the DB is
-    # fresh enough to resolve packages on a minimal/fresh system.
-    echo "Syncing package database and installing required host tools..."
-    pacman -Sy --noconfirm --quiet 2>&1 | tail -1 || true
-    pacman -S --noconfirm --needed \
-        dialog \
-        base-devel \
-        bc \
-        flex \
-        bison \
-        openssl \
-        libelf \
-        pahole \
-        || echo "Warning: some host tool packages failed to install — continuing"
-
-    local distro_name
-    distro_name=$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null \
-        | cut -d= -f2 | tr -d '"' || echo "Arch Linux")
-
-    if [[ "${OVERLAY_MODE:-}" != "--overlay" ]]; then
-        dialog --clear --backtitle "JARVIS OS Package Installer" \
-               --title "Install JARVIS OS on ${distro_name}" \
-               --yesno "\
-Install JARVIS OS components on: ${distro_name}
-
-This will install (existing packages kept):
-  • KDE Plasma Wayland desktop + SDDM
-  • PipeWire audio ecosystem
-  • NetworkManager + WiFi (wpa_supplicant backend)
-  • GPU drivers: Mesa, Vulkan, Intel VA-API, AMD
-  • Fonts: Noto, Liberation, DejaVu, CJK
-  • linux + linux-headers kernel packages
-  • Ollama AI engine
-  • JARVIS Python code + venv + dependencies
-  • Vosk speech recognition model (~50 MB)
-  • Piper TTS model (~65 MB)
-  • JARVIS systemd services (enabled)
-  • SDDM enabled as display manager
-
-No disk will be wiped. No partitioning.
-
-Proceed?" 28 70 || { clear; echo "Aborted."; exit 0; }
-    fi
-
-    clear
-    echo ""
-    echo -e "${BOLD}${CYAN}  ╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}  ║    Installing JARVIS OS Components               ║${NC}"
-    echo -e "${BOLD}${CYAN}  ╚══════════════════════════════════════════════════╝${NC}"
-    echo ""
-
-    # ── Sync DB ──────────────────────────────────────────────────────────
-    info "Syncing package database..."
-    pacman -Sy --noconfirm 2>&1 || warn "pacman -Sy had issues — continuing"
-    ok "Package database synced"
-
-    # ── Base utilities ───────────────────────────────────────────────────
-    info "Installing base utilities..."
-    pacman -S --noconfirm --needed \
-        sudo less nano vim wget curl git openssh man-db man-pages \
-        unzip zip p7zip rsync tzdata bash-completion which lsof htop fastfetch \
-        || warn "Some base packages failed"
-    ok "Base utilities installed"
-
-    # ── Kernel packages ──────────────────────────────────────────────────
-    info "Installing kernel packages..."
-    pacman -S --noconfirm --needed linux linux-headers linux-firmware \
-        || warn "Kernel packages had issues"
-    ok "Kernel packages installed"
-
-    # ── linux-jarvisos custom kernel ─────────────────────────────────────
-    # Install alongside the existing kernel — does not remove it.
-    # Looks for pre-built packages first, then builds from source.
-    # Set SKIP_BUILD_KERNEL=1 to skip the makepkg build step entirely.
-    info "Installing linux-jarvisos custom kernel..."
-    _install_linux_jarvisos() {
-        # 1. Already installed?
-        if pacman -Q linux-jarvisos >/dev/null 2>&1; then
-            ok "linux-jarvisos already installed ($(pacman -Q linux-jarvisos | awk '{print $2}'))"
-            return 0
-        fi
-
-        local _script_dir; _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        local _project_root; _project_root="$(cd "${_script_dir}/../.." && pwd)"
-        local _kernel_src="${_project_root}/linux-jarvisos"
-        local _pkgbuild_dir="${_project_root}/packages/linux-jarvisos"
-        local _pkg_dest="${_project_root}/build/kernel-pkg"
-
-        # Helper: find directory containing pre-built packages
-        _kjf_find_dir() {
-            local _d
-            for _d in "/opt/jarvis-kernel-pkg" "${_pkg_dest}" \
-                      "${_project_root}/build/kernel-pkg"; do
-                if [ -d "${_d}" ] && \
-                   find "${_d}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-                       ! -name 'linux-jarvisos-headers-*' -quit 2>/dev/null | grep -q .; then
-                    echo "${_d}"; return 0
-                fi
-            done
-            return 1
-        }
-
-        # Helper: install kernel + headers from a package directory
-        _kjf_install_from_dir() {
-            local _d="$1" _pkg _hdr
-            _pkg=$(find "${_d}" -name 'linux-jarvisos-[0-9]*.pkg.tar.zst' \
-                        ! -name 'linux-jarvisos-headers-*' 2>/dev/null | sort -V | tail -1)
-            _hdr=$(find "${_d}" -name 'linux-jarvisos-headers-[0-9]*.pkg.tar.zst' \
-                        2>/dev/null | sort -V | tail -1)
-            [ -n "${_pkg}" ] && [ -n "${_hdr}" ] || return 1
-            info "Installing: $(basename "${_pkg}")"
-            pacman -U --noconfirm "${_pkg}" "${_hdr}" \
-                && ok "linux-jarvisos installed from pre-built packages" && return 0
-            warn "Pre-built package install failed"
-            return 1
-        }
-
-        # 2. Try pre-built packages first
-        local _found_dir
-        if _found_dir=$(_kjf_find_dir); then
-            _kjf_install_from_dir "${_found_dir}" && return 0
-        fi
-
-        # 3. SKIP_BUILD_KERNEL=1 — no build, warn and continue
-        if [[ "${SKIP_BUILD_KERNEL:-0}" == "1" ]]; then
-            warn "SKIP_BUILD_KERNEL=1 set and no pre-built packages found — skipping kernel build"
-            warn "linux-jarvisos not installed. JARVIS kernel features (/dev/jarvis, policy engine,"
-            warn "sysmon sysfs) will be unavailable. The JARVIS AI stack runs on the stock kernel."
-            return 0
-        fi
-
-        # 4. Build from source
-        if [ ! -f "${_kernel_src}/Makefile" ]; then
-            warn "linux-jarvisos submodule not initialized — ${_kernel_src}/Makefile missing"
-            warn "Run: git submodule update --init linux-jarvisos"
-            warn "linux-jarvisos not installed. JARVIS kernel features unavailable."
-            return 0
-        fi
-        if [ ! -f "${_pkgbuild_dir}/PKGBUILD" ]; then
-            warn "PKGBUILD missing at ${_pkgbuild_dir}/PKGBUILD"
-            warn "linux-jarvisos not installed. JARVIS kernel features unavailable."
-            return 0
-        fi
-        if ! command -v makepkg >/dev/null 2>&1; then
-            warn "makepkg not found — cannot build linux-jarvisos on this system"
-            warn "linux-jarvisos not installed. JARVIS kernel features unavailable."
-            return 0
-        fi
-
-        # Check build tools
-        local _missing=()
-        for _tool in make gcc bc flex bison perl; do
-            command -v "${_tool}" >/dev/null 2>&1 || _missing+=("${_tool}")
-        done
-        if ! pkg-config --exists openssl 2>/dev/null \
-           && [ ! -f /usr/include/openssl/ssl.h ]; then
-            _missing+=("openssl")
-        fi
-        if ! pkg-config --exists libelf 2>/dev/null \
-           && [ ! -f /usr/include/libelf.h ] \
-           && [ ! -f /usr/include/gelf.h ]; then
-            _missing+=("libelf")
-        fi
-        if [ ${#_missing[@]} -gt 0 ]; then
-            warn "Missing kernel build tools: ${_missing[*]}"
-            warn "Install: sudo pacman -S base-devel bc flex bison openssl libelf pahole"
-            warn "Then re-run: sudo bash jarvis-install --overlay"
-            return 0
-        fi
-
-        info "Building linux-jarvisos from source (20-60 min first run)..."
-
-        # Remove stale .config if CONFIG_JARVIS absent — forces clean config from /proc/config.gz
-        if [ -f "${_kernel_src}/.config" ] && \
-           ! grep -q "^CONFIG_JARVIS=" "${_kernel_src}/.config" 2>/dev/null; then
-            warn "Stale .config missing CONFIG_JARVIS — removing for clean rebuild"
-            rm -f "${_kernel_src}/.config"
-        fi
-
-        # makepkg refuses to run as root — drop privileges to SUDO_USER
-        local _build_user="${SUDO_USER:-$(logname 2>/dev/null || true)}"
-        local _makepkg_prefix=""
-        if [ "$(id -u)" -eq 0 ]; then
-            if [ -z "${_build_user}" ] || [ "${_build_user}" = "root" ]; then
-                warn "Running as root with no SUDO_USER — cannot invoke makepkg"
-                warn "Run as your regular user: sudo bash jarvis-install --overlay"
-                return 0
-            fi
-            mkdir -p "${_pkg_dest}"
-            chown "${_build_user}" "${_pkg_dest}"
-            chown -R "${_build_user}" "${_pkgbuild_dir}"
-            chown -R "${_build_user}" "${_kernel_src}"
-            _makepkg_prefix="sudo -u ${_build_user}"
-        fi
-
-        mkdir -p "${_pkg_dest}"
-        local _ncpu; _ncpu=$(nproc)
-
-        (
-            cd "${_pkgbuild_dir}"
-            ${_makepkg_prefix} env \
-                KERNEL_SRC="${_kernel_src}" \
-                PKGDEST="${_pkg_dest}" \
-                MAKEFLAGS="-j${_ncpu}" \
-                makepkg --nodeps --nocheck --skipinteg --force
-        ) || { warn "linux-jarvisos build failed — JARVIS kernel features unavailable"; return 0; }
-
-        ok "linux-jarvisos packages built"
-
-        # Install the freshly built packages
-        if _found_dir=$(_kjf_find_dir); then
-            _kjf_install_from_dir "${_found_dir}" && return 0
-        fi
-
-        warn "Build succeeded but packages not found in ${_pkg_dest}"
-        return 0
-    }
-    _install_linux_jarvisos
-
-    # Ensure jarvis.ko auto-loads at boot — create modules-load.d entry and
-    # regenerate modules.dep. Handles pre-built packages that pre-date the
-    # modules-load.d addition in PKGBUILD.
-    if pacman -Q linux-jarvisos >/dev/null 2>&1; then
-        local _jkver; _jkver=$(ls /usr/lib/modules/ 2>/dev/null | grep -m1 'jarvisos' || true)
-        [ -n "${_jkver}" ] && depmod -a "${_jkver}" 2>/dev/null \
-            && ok "jarvis module dependency map regenerated (${_jkver})" \
-            || warn "depmod failed for linux-jarvisos — run 'depmod -a' manually after reboot"
-        mkdir -p /usr/lib/modules-load.d
-printf 'jarvis\n' > /usr/lib/modules-load.d/jarvis.conf
-    fi
-
-    # Update GRUB/systemd-boot to add linux-jarvisos entry if kernel installed
-    if pacman -Q linux-jarvisos >/dev/null 2>&1; then
-        if [ -f /boot/vmlinuz-linux-jarvisos ]; then
-            if [ -d /sys/firmware/efi/efivars ] && [ -d /boot/loader/entries ]; then
-                # systemd-boot: add entry if not already present
-                local _entry="/boot/loader/entries/jarvisos.conf"
-                if [ ! -f "${_entry}" ]; then
-                    local _root_partuuid; _root_partuuid=$(blkid -s PARTUUID -o value "$(findmnt -n -o SOURCE /)" 2>/dev/null || true)
-                    if [ -n "${_root_partuuid}" ]; then
-                        cat > "${_entry}" << BOOTEOF
-title   JARVIS OS (linux-jarvisos)
-linux   /vmlinuz-linux-jarvisos
-initrd  /initramfs-linux-jarvisos.img
-options root=PARTUUID=${_root_partuuid} rw
-BOOTEOF
-                        ok "systemd-boot entry added for linux-jarvisos"
-                    fi
-                fi
-            elif command -v grub-mkconfig >/dev/null 2>&1; then
-                # GRUB: os-prober + grub-mkconfig picks up all installed kernels
-                grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null \
-                    && ok "GRUB updated to include linux-jarvisos entry" \
-                    || warn "grub-mkconfig failed — update GRUB manually: grub-mkconfig -o /boot/grub/grub.cfg"
-            fi
-            # Regenerate initramfs for linux-jarvisos
-            if [ -f /etc/mkinitcpio.d/linux-jarvisos.preset ]; then
-                mkinitcpio -p linux-jarvisos \
-                    && ok "linux-jarvisos initramfs regenerated" \
-                    || warn "mkinitcpio failed for linux-jarvisos"
-            fi
-        fi
-    fi
-
-    # ── KDE Plasma Wayland ───────────────────────────────────────────────
-    info "Installing KDE Plasma Wayland..."
-    pacman -S --noconfirm --needed \
-        plasma-desktop plasma-workspace \
-        kwin plasma-nm plasma-pa kscreen powerdevil bluedevil \
-        kinfocenter polkit-kde-agent kdeplasma-addons plasma-systemmonitor \
-        sddm sddm-kcm breeze breeze-gtk kde-gtk-config oxygen-sounds \
-        kwalletmanager kwallet-pam \
-        qt5-wayland qt6-wayland xorg-xwayland \
-        dolphin konsole kate ark spectacle gwenview okular kcalc \
-        filelight kdeconnect \
-        xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-kde \
-        || warn "Some KDE packages failed"
-    ok "KDE Plasma installed"
-
-    # ── PipeWire ─────────────────────────────────────────────────────────
-    info "Installing PipeWire audio..."
-    pacman -S --noconfirm --needed \
-        pipewire pipewire-alsa pipewire-jack pipewire-pulse wireplumber \
-        gst-plugin-pipewire gst-plugins-good gst-plugins-bad gst-plugins-ugly \
-        sof-firmware alsa-firmware alsa-utils alsa-plugins \
-        rtkit pavucontrol \
-        || warn "Some audio packages failed"
-    ok "PipeWire installed"
-
-    # ── Bluetooth ────────────────────────────────────────────────────────
-    info "Installing Bluetooth..."
-    pacman -S --noconfirm --needed bluez bluez-utils \
-        || warn "Bluetooth packages failed"
-
-    # ── Network ──────────────────────────────────────────────────────────
-    info "Installing network tools..."
-    pacman -S --noconfirm --needed \
-        networkmanager nm-connection-editor network-manager-applet \
-        wpa_supplicant wireless-regdb iw modemmanager dhcpcd \
-        || warn "Some network packages failed"
-    ok "Network tools installed"
-
-    # ── GPU drivers ──────────────────────────────────────────────────────
-    info "Installing GPU drivers..."
-    pacman -S --noconfirm --needed \
-        mesa vulkan-intel vulkan-radeon vulkan-swrast \
-        libva-intel-driver intel-media-driver xf86-video-amdgpu \
-        || warn "Some GPU packages failed"
-    ok "GPU drivers installed"
-
-    # ── Input + fonts + filesystem tools ─────────────────────────────────
-    info "Installing input drivers, fonts, filesystem tools..."
-    pacman -S --noconfirm --needed \
-        libinput xf86-input-libinput xf86-input-evdev libevdev \
-        noto-fonts noto-fonts-emoji ttf-liberation ttf-dejavu noto-fonts-cjk \
-        e2fsprogs btrfs-progs dosfstools exfatprogs ntfs-3g \
-        parted gptfdisk grub efibootmgr arch-install-scripts \
-        || warn "Some packages failed"
-    ok "Drivers, fonts, filesystem tools installed"
-
-    # ── Python + JARVIS system deps ───────────────────────────────────────
-    info "Installing Python + JARVIS system dependencies..."
-    pacman -S --noconfirm --needed \
-        python python-pip python-setuptools python-wheel python-virtualenv \
-        gcc make pkg-config dialog portaudio python-pyaudio \
-        || warn "Some Python packages failed"
-    ok "Python dependencies installed"
-
-    # ── JARVIS OS branding ────────────────────────────────────────────────
-    info "Applying JARVIS OS branding..."
-    cat > /etc/os-release << 'EOF'
-NAME="JARVIS OS"
-PRETTY_NAME="JARVIS OS"
-ID=jarvisos
-ID_LIKE=arch
-BUILD_ID=rolling
-ANSI_COLOR="38;2;23;147;209"
-HOME_URL="https://github.com/JarvisOSLinux/jarvisos"
-DOCUMENTATION_URL="https://github.com/JarvisOSLinux/jarvisos/wiki"
-LOGO=distributor-logo-jarvisos
-EOF
-    ok "JARVIS OS branding applied"
-
-    # ── Ollama (GPU-aware install) ─────────────────────────────────────────
-    info "Installing Ollama..."
-    if command -v ollama >/dev/null 2>&1; then
-        ok "Ollama already installed ($(ollama --version 2>/dev/null || echo unknown))"
-    else
-        _install_ollama_gpu
-    fi
-
-    # Ollama systemd service — pacman-installed variants provide this automatically;
-    # fallback only needed if pacman install failed or binary landed at non-standard path.
-    if [ ! -f /usr/lib/systemd/system/ollama.service ]; then
-        local _ollama_bin
-        _ollama_bin=$(command -v ollama 2>/dev/null || echo "/usr/bin/ollama")
-        cat > /usr/lib/systemd/system/ollama.service << OLLAMAEOF
-[Unit]
-Description=Ollama Service
-After=network-online.target
-
-[Service]
-ExecStart=${_ollama_bin} serve
-User=ollama
-Group=ollama
-Restart=always
-RestartSec=3
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="HOME=/usr/share/ollama"
-Environment="OLLAMA_HOST=127.0.0.1"
-
-[Install]
-WantedBy=default.target
-OLLAMAEOF
-    fi
-    getent group  ollama >/dev/null 2>&1 || groupadd -r ollama
-    getent passwd ollama >/dev/null 2>&1 || \
-        useradd -r -g ollama -d /usr/share/ollama -s /bin/false -c 'Ollama Service' ollama
-    mkdir -p /usr/share/ollama && chown -R ollama:ollama /usr/share/ollama
-
-    # ── JARVIS user + directories ─────────────────────────────────────────
-    info "Setting up JARVIS user and directories..."
-    getent group  jarvis >/dev/null 2>&1 || groupadd -r jarvis
-    getent passwd jarvis >/dev/null 2>&1 || \
-        useradd -r -g jarvis -d /var/lib/jarvis -s /sbin/nologin \
-                -c 'JARVIS AI Assistant' jarvis
-    for grp in audio video network systemd-journal storage optical; do
-        getent group "${grp}" >/dev/null 2>&1 && \
-            usermod -aG "${grp}" jarvis 2>/dev/null || true
-    done
-    mkdir -p /usr/lib/jarvis \
-             /var/lib/jarvis/models/piper \
-             /var/lib/jarvis/models/vosk \
-             /var/log/jarvis
-    # /etc/jarvis: setgid + group-writable so jarvis-group members can update
-    # config without sudo; new files automatically inherit the jarvis group.
-    mkdir -p /etc/jarvis
-    chown jarvis:jarvis /etc/jarvis
-    chmod 2775 /etc/jarvis
-    chown -R jarvis:jarvis /var/lib/jarvis /var/log/jarvis
-
-    # udev rule: /dev/jarvis GROUP=jarvis MODE=0660
-    mkdir -p /usr/lib/udev/rules.d
-    cat > /usr/lib/udev/rules.d/99-jarvis.rules << 'UDEVRULES'
-# /dev/jarvis — JARVIS AI kernel device
-# Grant read/write access to the jarvis group so any user in that group
-# can use the JARVIS CLI without sudo.
-KERNEL=="jarvis", GROUP="jarvis", MODE="0660"
-UDEVRULES
-    chmod 644 /usr/lib/udev/rules.d/99-jarvis.rules
-    udevadm control --reload-rules 2>/dev/null || true
-    udevadm trigger --name-match=jarvis 2>/dev/null || true
-
-    ok "JARVIS user and directories configured"
-
-    # ── JARVIS code ───────────────────────────────────────────────────────
-    info "Installing JARVIS code..."
-    local _jarvis_src
-    _jarvis_src=$(find_jarvis_source) || true
-
-    if [ "${_jarvis_src}" = "installed" ]; then
-        ok "JARVIS code already at /usr/lib/jarvis"
-    elif [ -n "${_jarvis_src}" ]; then
-        cp -r "${_jarvis_src}/jarvis/"* /usr/lib/jarvis/
-        [ -f "${_jarvis_src}/jarvis/.env.example" ] && \
-            cp "${_jarvis_src}/jarvis/.env.example" /usr/lib/jarvis/.env.example
-        [ -f "${_jarvis_src}/requirements.txt" ] && \
-            cp "${_jarvis_src}/requirements.txt" /usr/lib/jarvis/requirements.txt
-        chown -R jarvis:jarvis /usr/lib/jarvis
-        ok "JARVIS code installed from ${_jarvis_src}"
-    else
-        warn "JARVIS source not found locally — cloning from GitHub..."
-        if git clone --depth=1 \
-                https://github.com/YakupAtahanov/Project-JARVIS \
-                /tmp/Project-JARVIS-pkginstall 2>&1; then
-            cp -r /tmp/Project-JARVIS-pkginstall/jarvis/* /usr/lib/jarvis/
-            [ -f /tmp/Project-JARVIS-pkginstall/jarvis/.env.example ] && \
-                cp /tmp/Project-JARVIS-pkginstall/jarvis/.env.example /usr/lib/jarvis/.env.example
-            [ -f /tmp/Project-JARVIS-pkginstall/requirements.txt ] && \
-                cp /tmp/Project-JARVIS-pkginstall/requirements.txt /usr/lib/jarvis/requirements.txt
-            chown -R jarvis:jarvis /usr/lib/jarvis
-            rm -rf /tmp/Project-JARVIS-pkginstall
-            ok "JARVIS code cloned and installed"
-        else
-            warn "Could not clone Project-JARVIS — install JARVIS code manually:"
-            warn "  git clone https://github.com/YakupAtahanov/Project-JARVIS /tmp/jarvis"
-            warn "  sudo cp -r /tmp/jarvis/jarvis/* /usr/lib/jarvis/"
-        fi
-    fi
-
-    # ── Python venv ───────────────────────────────────────────────────────
-    if [ -f /usr/lib/jarvis/requirements.txt ]; then
-        if [ ! -d /var/lib/jarvis/venv ]; then
-            info "Creating Python virtual environment..."
-            python3 -m venv /var/lib/jarvis/venv \
-                || { warn "python3 -m venv failed — skipping venv setup"; return 0; }
-            /var/lib/jarvis/venv/bin/pip install --upgrade pip \
-                || warn "pip upgrade failed — continuing"
-            /var/lib/jarvis/venv/bin/pip install -r /usr/lib/jarvis/requirements.txt \
-                || warn "Some Python deps failed — check /var/lib/jarvis/venv manually"
-            /var/lib/jarvis/venv/bin/pip install "textual>=0.60.0" \
-                || warn "textual install failed — run: sudo /var/lib/jarvis/venv/bin/pip install textual"
-            chown -R jarvis:jarvis /var/lib/jarvis/venv
-            ok "Python venv created"
-        else
-            ok "Python venv already exists"
-        fi
-    else
-        warn "requirements.txt missing — skipping venv setup"
-    fi
-
-    # ── .env defaults ─────────────────────────────────────────────────────
-    if [ -f /usr/lib/jarvis/.env.example ] && [ ! -f /usr/lib/jarvis/.env ]; then
-        cp /usr/lib/jarvis/.env.example /usr/lib/jarvis/.env
-        chown jarvis:jarvis /usr/lib/jarvis/.env
-    fi
-    if [ -f /usr/lib/jarvis/.env ]; then
-        _set_env() {
-            local k="$1" v="$2" f="/usr/lib/jarvis/.env"
-            grep -q "^${k}=" "${f}" \
-                && sed -i "s|^${k}=.*|${k}=${v}|" "${f}" \
-                || echo "${k}=${v}" >> "${f}"
-        }
-        # Read installer model selection (written by install_system() before chroot)
-        local _inst_model
-        _inst_model=$(cat /tmp/.jarvis-model-choice 2>/dev/null \
-            | tr -cd '[:alnum:]:.-' | head -c 64)
-        [ -z "${_inst_model}" ] && _inst_model="qwen3:4b"
-        local _auto_pull="true"
-        [ "${_inst_model}" = "none" ] && { _inst_model="qwen3:4b"; _auto_pull="false"; }
-        _set_env LLM_AUTO_PULL     "${_auto_pull}"
-        _set_env LLM_MODEL         "${_inst_model}"
-        _set_env VOSK_MODEL_PATH   /var/lib/jarvis/models/vosk/vosk-model-small-en-us-0.15
-        _set_env TTS_MODEL_ONNX    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx
-        _set_env TTS_MODEL_JSON    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx.json
-        _set_env OUTPUT_MODE       voice
-        _set_env CONTEXTOR_ENABLED true
-        _set_env DATA_CONSENT      true
-        chown jarvis:jarvis /usr/lib/jarvis/.env
-        ok ".env defaults applied"
-    fi
-
-    # ── CLI wrappers ──────────────────────────────────────────────────────
-    info "Installing CLI wrappers..."
-    cat > /usr/bin/jarvis << 'JCLI'
-#!/bin/bash
-VENV_PATH="/var/lib/jarvis/venv"
-[ -f "${VENV_PATH}/bin/activate" ] && source "${VENV_PATH}/bin/activate"
-export PYTHONPATH="/usr/lib:${PYTHONPATH:-}"
-cd /usr/lib/jarvis
-python -m jarvis.cli "$@"
-JCLI
-    chmod +x /usr/bin/jarvis
-
-    cat > /usr/bin/jarvis-daemon << 'JD'
-#!/bin/bash
-VENV_PATH="/var/lib/jarvis/venv"
-[ -f "${VENV_PATH}/bin/activate" ] && source "${VENV_PATH}/bin/activate"
-export PYTHONPATH="/usr/lib:${PYTHONPATH:-}"
-cd /usr/lib/jarvis
-exec python -m jarvis.cli run "$@"
-JD
-    chmod +x /usr/bin/jarvis-daemon
-    ok "CLI wrappers installed"
-
-    # ── sudoers + polkit ──────────────────────────────────────────────────
-    cat > /etc/sudoers.d/10-jarvis << 'SUDOERS_EOF'
-Defaults:jarvis !requiretty, !lecture, passwd_tries=0
-# Scoped NOPASSWD: only service management, network, and kernel module tools.
-# File-system write primitives (cp, mv, rm, chmod, chown) intentionally
-# excluded — JARVIS must request those through the TLA confirmation gate.
-jarvis ALL=(ALL) NOPASSWD: \
-    /usr/bin/pacman,        \
-    /usr/bin/systemctl,     \
-    /usr/bin/journalctl,    \
-    /usr/bin/nmcli,         \
-    /usr/bin/timedatectl,   \
-    /usr/bin/localectl,     \
-    /usr/bin/hostnamectl,   \
-    /usr/bin/modprobe,      \
-    /usr/bin/sysctl,        \
-    /usr/bin/mkdir
-SUDOERS_EOF
-    chmod 440 /etc/sudoers.d/10-jarvis
-
-    mkdir -p /etc/polkit-1/rules.d
-    # Scoped polkit rules: allow only specific D-Bus actions — not entire
-    # org-prefix namespaces — to satisfy the TLA ELEVATED tier boundary.
-    # Full sudo (TLA SUDO tier) still requires out-of-band user confirmation
-    # via confirmation_manager.py; these rules cover ELEVATED-tier D-Bus ops.
-    cat > /etc/polkit-1/rules.d/49-jarvis.rules << 'POLKIT_EOF'
-polkit.addRule(function(action, subject) {
-    if (subject.user === "jarvis") {
-        // TLA ELEVATED: systemd unit management (start/stop/reload services)
-        var allowed_systemd = [
-            "org.freedesktop.systemd1.manage-units",
-            "org.freedesktop.systemd1.reload-daemon",
-            "org.freedesktop.systemd1.manage-unit-files",
-        ];
-        for (var i = 0; i < allowed_systemd.length; i++) {
-            if (action.id === allowed_systemd[i]) { return polkit.Result.YES; }
-        }
-        // TLA ELEVATED: network configuration (WiFi, IP, DNS)
-        var allowed_nm = [
-            "org.freedesktop.NetworkManager.network-control",
-            "org.freedesktop.NetworkManager.wifi.share.open",
-            "org.freedesktop.NetworkManager.settings.modify.system",
-        ];
-        for (var i = 0; i < allowed_nm.length; i++) {
-            if (action.id === allowed_nm[i]) { return polkit.Result.YES; }
-        }
-        // TLA ELEVATED: time, locale, hostname (read-only equivalent — only set ops)
-        if (action.id === "org.freedesktop.timedate1.set-timezone"   ||
-            action.id === "org.freedesktop.timedate1.set-ntp"        ||
-            action.id === "org.freedesktop.locale1.set-locale"       ||
-            action.id === "org.freedesktop.hostname1.set-hostname") {
-            return polkit.Result.YES;
-        }
-    }
-});
-POLKIT_EOF
-    chmod 644 /etc/polkit-1/rules.d/49-jarvis.rules
-    ok "sudoers + polkit rules installed (scoped to TLA ELEVATED tier)"
-
-    # ── Systemd service units ─────────────────────────────────────────────
-    info "Installing systemd service units..."
-    cat > /usr/lib/systemd/system/jarvis.service << 'JARVISSVC'
-[Unit]
-Description=JARVIS AI Voice Assistant
-After=network.target sound.target ollama.service
-Wants=network.target ollama.service
-
-[Service]
-Type=simple
-User=jarvis
-Group=jarvis
-SupplementaryGroups=audio video network systemd-journal storage
-WorkingDirectory=/usr/lib/jarvis
-RuntimeDirectory=jarvis
-RuntimeDirectoryMode=0775
-ExecStartPre=-+/sbin/modprobe jarvis
-ExecStart=/usr/bin/jarvis-daemon
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=always
-RestartSec=10
-TimeoutStartSec=60
-TimeoutStopSec=30
-AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_NICE
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_NICE
-PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectControlGroups=yes
-RestrictRealtime=yes
-LimitNOFILE=65536
-LimitNPROC=4096
-Environment=JARVIS_CONFIG_DIR=/etc/jarvis
-Environment=JARVIS_DATA_DIR=/var/lib/jarvis
-Environment=JARVIS_INPUT_SOCKET=/run/jarvis/input.sock
-Environment=JARVIS_OUTPUT_SOCKET=/run/jarvis/output.sock
-Environment=JARVIS_LOG_DIR=/var/log/jarvis
-Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
-Environment=PYTHONPATH=/usr/lib
-Environment=OLLAMA_HOST=127.0.0.1:11434
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=jarvis
-
-[Install]
-WantedBy=multi-user.target
-JARVISSVC
-
-    cat > /usr/lib/systemd/system/jarvis-setup.service << 'SETUPSVC'
-[Unit]
-Description=JARVIS First-Boot Setup (pull LLM model)
-After=network-online.target ollama.service
-Wants=network-online.target ollama.service
-ConditionPathExists=!/var/lib/jarvis/.setup-done
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/jarvis-first-boot.sh
-RemainAfterExit=yes
-TimeoutStartSec=600
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-SETUPSVC
-
-    cat > /usr/local/bin/jarvis-first-boot.sh << 'FIRSTBOOT'
-#!/bin/bash
-MARKER="/var/lib/jarvis/.setup-done"
-LOG="/var/log/jarvis/first-boot.log"
-mkdir -p /var/log/jarvis
-exec > >(tee -a "$LOG") 2>&1
-echo "=== JARVIS first-boot $(date) ==="
-[ -f "$MARKER" ] && echo "Already done." && exit 0
-MODEL="qwen3:4b"
-AUTO_PULL="true"
-if [ -f /usr/lib/jarvis/.env ]; then
-    _m=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
-    [ -n "$_m" ] && MODEL="$_m"
-    _ap=$(grep -E '^LLM_AUTO_PULL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
-    [ -n "$_ap" ] && AUTO_PULL="$_ap"
-fi
-if [ "${AUTO_PULL}" = "false" ]; then
-    echo "Auto-pull disabled by installer choice — skipping model download."
-    touch "$MARKER"
-    systemctl disable jarvis-setup.service 2>/dev/null || true
-    exit 0
-fi
-echo "Waiting for Ollama..."
-for i in $(seq 1 60); do
-    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 2
-done
-ollama list 2>/dev/null | grep -q "${MODEL%%:*}" || ollama pull "$MODEL" || exit 1
-touch "$MARKER"
-systemctl disable jarvis-setup.service 2>/dev/null || true
-echo "First-boot complete."
-FIRSTBOOT
-    chmod 755 /usr/local/bin/jarvis-first-boot.sh
-
-    # ── First-login welcome + model selection wizard ──────────────────────
-    cat > /usr/local/bin/jarvis-welcome.sh << 'WELCOMEEOF'
-#!/bin/bash
-# JARVIS OS first-login setup wizard — runs once via KDE autostart
-MARKER="${HOME}/.config/jarvis-welcome-done"
-ENV_FILE="/usr/lib/jarvis/.env"
-BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-RED='\033[0;31m'; NC='\033[0m'
-
-[ -f "$MARKER" ] && exit 0
-
-clear
-echo ""
-echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${CYAN}  ║              Welcome to JARVIS OS                  ║${NC}"
-echo -e "${BOLD}${CYAN}  ║           AI-Native Linux Distribution             ║${NC}"
-echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
-echo ""
-
-# ── Wait for Ollama ───────────────────────────────────────────────────────
-echo -e "  Checking Ollama AI engine..."
-for i in $(seq 1 30); do
-    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
-    sleep 2
-done
-
-OLLAMA_OK=false
-curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && OLLAMA_OK=true
-
-if $OLLAMA_OK; then
-    echo -e "  ${GREEN}✓ Ollama ready${NC}"
-else
-    echo -e "  ${YELLOW}⚠ Ollama not responding — services may still be starting.${NC}"
-    echo -e "    Check: sudo systemctl status ollama"
-fi
-echo ""
-
-# ── Read current model from .env ─────────────────────────────────────────
-CURRENT_MODEL="qwen3:4b"
-if [ -f "$ENV_FILE" ]; then
-    _m=$(grep -E '^LLM_MODEL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
-    [ -n "$_m" ] && CURRENT_MODEL="$_m"
-fi
-
-# ── Check model already downloaded ───────────────────────────────────────
-MODEL_READY=false
-if $OLLAMA_OK && ollama list 2>/dev/null | grep -q "${CURRENT_MODEL%%:*}"; then
-    MODEL_READY=true
-fi
-
-if $MODEL_READY; then
-    echo -e "  ${GREEN}✓ AI model ready: ${CURRENT_MODEL}${NC}"
-else
-    echo -e "  ${YELLOW}⚠ AI model not yet downloaded: ${CURRENT_MODEL}${NC}"
-    echo -e "    First-boot service will pull it automatically (needs internet)."
-fi
-echo ""
-
-# ── Model selection ───────────────────────────────────────────────────────
-MODEL_CHOICE="keep"
-if command -v dialog >/dev/null 2>&1; then
-    MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
-        --title "AI Model Selection" \
-        --menu "Select AI model (current: ${CURRENT_MODEL}):" 20 72 7 \
-        "keep"          "Keep current: ${CURRENT_MODEL}" \
-        "qwen3:4b"      "Qwen3 4B     — recommended  (~2.6 GB)" \
-        "qwen3:8b"      "Qwen3 8B     — better quality (~5.2 GB)" \
-        "llama3.2:3b"   "Llama 3.2 3B — lightweight  (~2.0 GB)" \
-        "llama3.1:8b"   "Llama 3.1 8B — high quality (~4.9 GB)" \
-        "gemma3:4b"     "Gemma 3 4B   — Google model (~3.3 GB)" \
-        "custom"        "Enter custom model name" \
-        3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
-
-    if [ "${MODEL_CHOICE:-}" = "custom" ]; then
-        MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
-            --title "Custom Model" \
-            --inputbox "Enter Ollama model name (e.g. mistral:7b, phi3:mini):" \
-            8 60 "${CURRENT_MODEL}" \
-            3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
-    fi
-    clear
-fi
-[ -z "${MODEL_CHOICE:-}" ] && MODEL_CHOICE="keep"
-
-# ── Apply model change ────────────────────────────────────────────────────
-if [ "${MODEL_CHOICE}" != "keep" ] && [ -n "${MODEL_CHOICE}" ] \
-        && [ "${MODEL_CHOICE}" != "${CURRENT_MODEL}" ]; then
-    echo -e "  Switching model to: ${MODEL_CHOICE}"
-    if [ -f "$ENV_FILE" ]; then
-        if [ -w "$ENV_FILE" ]; then
-            grep -q "^LLM_MODEL=" "$ENV_FILE" \
-                && sed -i "s|^LLM_MODEL=.*|LLM_MODEL=${MODEL_CHOICE}|" "$ENV_FILE" \
-                || echo "LLM_MODEL=${MODEL_CHOICE}" >> "$ENV_FILE"
-        else
-            grep -q "^LLM_MODEL=" "$ENV_FILE" \
-                && sudo sed -i "s|^LLM_MODEL=.*|LLM_MODEL=${MODEL_CHOICE}|" "$ENV_FILE" \
-                || echo "LLM_MODEL=${MODEL_CHOICE}" | sudo tee -a "$ENV_FILE" >/dev/null
-        fi
-    fi
-    CURRENT_MODEL="${MODEL_CHOICE}"
-    MODEL_READY=false
-fi
-
-# ── Pull model if not downloaded ─────────────────────────────────────────
-if ! $MODEL_READY && $OLLAMA_OK; then
-    echo ""
-    echo -e "  Pulling AI model: ${BOLD}${CURRENT_MODEL}${NC}"
-    echo -e "  This may take several minutes depending on your connection..."
-    echo ""
-    if ollama pull "${CURRENT_MODEL}"; then
-        echo ""
-        echo -e "  ${GREEN}✓ Model downloaded: ${CURRENT_MODEL}${NC}"
-        MODEL_READY=true
-        sudo systemctl disable jarvis-setup.service 2>/dev/null || true
-        sudo touch /var/lib/jarvis/.setup-done 2>/dev/null || true
-    else
-        echo -e "  ${RED}✗ Model pull failed.${NC}"
-        echo -e "    Try manually: ollama pull ${CURRENT_MODEL}"
-        echo -e "    Or check:     sudo systemctl status jarvis-setup"
-        echo ""
-        echo -e "  Press Enter to continue..."
-        read -r
-    fi
-fi
-
-# ── Restart JARVIS daemon to pick up model/config changes ─────────────────
-if $MODEL_READY; then
-    sudo systemctl restart jarvis.service 2>/dev/null || true
-fi
-
-# ── Usage ─────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${BOLD}${CYAN}  ╔════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${CYAN}  ║                 JARVIS OS Ready!                   ║${NC}"
-echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  ${BOLD}AI Model:${NC}   ${CURRENT_MODEL}"
-echo -e "  ${BOLD}Engine:${NC}     Ollama (localhost:11434)"
-echo -e "  ${BOLD}Kernel:${NC}     $(uname -r)"
-echo ""
-echo -e "  ${BOLD}How to use JARVIS:${NC}"
-echo -e "    ${BOLD}jarvis chat${NC}      — interactive AI chat"
-echo -e "    ${BOLD}jarvis voice${NC}     — voice mode (microphone + TTS)"
-echo -e "    ${BOLD}jarvis status${NC}    — service status"
-echo -e "    ${BOLD}jarvis --help${NC}    — all commands"
-echo ""
-echo -e "  ${CYAN}JARVIS runs as a background service and restarts automatically.${NC}"
-echo -e "  Find it in the applications menu or launch from terminal."
-echo ""
-echo -e "  Press Enter to close this window..."
-read -r
-
-# ── Mark done — do not re-run on next login ───────────────────────────────
-mkdir -p "$(dirname "$MARKER")"
-touch "$MARKER"
-WELCOMEEOF
-    chmod 755 /usr/local/bin/jarvis-welcome.sh
-    ok "Systemd service units installed"
-
-    # ── Vosk STT model ────────────────────────────────────────────────────
-    local _vosk_model="vosk-model-small-en-us-0.15"
-    local _vosk_dest="/var/lib/jarvis/models/vosk"
-    if [ -d "${_vosk_dest}/${_vosk_model}" ]; then
-        ok "Vosk model already present"
-    else
-        info "Downloading Vosk STT model (~50 MB)..."
-        local _vtmp; _vtmp=$(mktemp -d)
-        if curl -fSL -o "${_vtmp}/${_vosk_model}.zip" \
-                "https://alphacephei.com/vosk/models/${_vosk_model}.zip"; then
-            unzip -qo "${_vtmp}/${_vosk_model}.zip" -d "${_vosk_dest}/"
-            chown -R jarvis:jarvis "${_vosk_dest}"
-            ok "Vosk model installed"
-        else
-            warn "Vosk download failed — voice recognition disabled until installed manually"
-        fi
-        rm -rf "${_vtmp}"
-    fi
-
-    # ── Piper TTS model ───────────────────────────────────────────────────
-    local _piper_model="en_US-amy-medium"
-    local _piper_dest="/var/lib/jarvis/models/piper"
-    local _piper_base="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium"
-    mkdir -p "${_piper_dest}"
-    if [ -f "${_piper_dest}/${_piper_model}.onnx" ]; then
-        ok "Piper TTS model already present"
-    else
-        info "Downloading Piper TTS model (~65 MB)..."
-        if curl -fSL -o "${_piper_dest}/${_piper_model}.onnx" \
-                    "${_piper_base}/${_piper_model}.onnx" && \
-           curl -fSL -o "${_piper_dest}/${_piper_model}.onnx.json" \
-                    "${_piper_base}/${_piper_model}.onnx.json"; then
-            chown -R jarvis:jarvis "${_piper_dest}"
-            ok "Piper TTS model installed"
-        else
-            warn "Piper download failed — TTS disabled until installed manually"
-        fi
-    fi
-
-    # ── XDG autostart + desktop launcher ─────────────────────────────────
-    mkdir -p /etc/xdg/autostart /usr/share/applications
-    cat > /etc/xdg/autostart/ollama.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=Ollama Service
-Exec=/usr/local/bin/ollama serve
-Terminal=false
-StartupNotify=false
-NoDisplay=true
-EOF
-    cat > /etc/xdg/autostart/jarvis.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=JARVIS AI Assistant
-Exec=/usr/bin/jarvis-daemon
-Terminal=false
-StartupNotify=false
-NoDisplay=true
-X-KDE-autostart-phase=2
-EOF
-    cat > /usr/share/applications/jarvis.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=JARVIS AI
-GenericName=AI Assistant
-Comment=Chat with your JARVIS AI assistant
-Exec=konsole -e jarvis chat
-Icon=utilities-terminal
-Terminal=false
-Categories=Utility;System;
-Keywords=jarvis;ai;assistant;chat;voice;
-StartupNotify=true
-EOF
-
-    # ── SDDM ─────────────────────────────────────────────────────────────
-    info "Configuring SDDM..."
-    mkdir -p /etc/sddm.conf.d
-    cat > /etc/sddm.conf.d/jarvisos.conf << 'SDDM'
-[General]
-DisplayServer=wayland
-Numlock=on
-
-[Wayland]
-SessionCommand=/usr/share/sddm/scripts/wayland-session
-SessionDir=/usr/share/wayland-sessions
-SDDM
-
-    # ── NetworkManager backend ────────────────────────────────────────────
-    mkdir -p /etc/NetworkManager/conf.d
-    cat > /etc/NetworkManager/conf.d/wifi-backend.conf << 'EOF'
-[device]
-wifi.backend=wpa_supplicant
-EOF
-
-    # ── Enable / disable services ─────────────────────────────────────────
-    info "Enabling systemd services..."
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable NetworkManager.service              2>/dev/null || true
-    systemctl enable systemd-resolved.service            2>/dev/null || true
-    systemctl enable sddm.service                        2>/dev/null || true
-    systemctl enable bluetooth.service                   2>/dev/null || true
-    systemctl enable rtkit-daemon.service                2>/dev/null || true
-    systemctl enable ollama.service                      2>/dev/null || true
-    systemctl enable jarvis.service                      2>/dev/null || true
-    systemctl enable jarvis-setup.service                2>/dev/null || true
-    systemctl disable iwd.service                        2>/dev/null || true
-    systemctl mask    iwd.service                        2>/dev/null || true
-    systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
-    ok "Services enabled"
-
-    # ── Done ──────────────────────────────────────────────────────────────
-    clear
-    echo ""
-    echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}  ║     JARVIS OS Components Installed!              ║${NC}"
-    echo -e "${GREEN}${BOLD}  ╚══════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "  ${BOLD}Installed:${NC}"
-    echo -e "    ✓ KDE Plasma Wayland + SDDM (enabled)"
-    echo -e "    ✓ PipeWire audio + Bluetooth"
-    echo -e "    ✓ NetworkManager + WiFi (wpa_supplicant)"
-    echo -e "    ✓ GPU drivers (Mesa / Vulkan / Intel / AMD)"
-    echo -e "    ✓ Ollama AI engine"
-    echo -e "    ✓ JARVIS AI assistant + Python venv"
-    echo -e "    ✓ Vosk STT + Piper TTS models"
-    echo -e "    ✓ All systemd services enabled"
-    echo ""
-    echo -e "  ${CYAN}Next steps:${NC}"
-    echo -e "    Reboot to start KDE Plasma Wayland + JARVIS"
-    echo -e "    AI model (qwen3:4b) downloads on first boot (internet required)"
-    echo ""
-    echo -e "    ${BOLD}reboot${NC}"
-    echo ""
-}
-
-# ── Uninstall JARVIS OS components from an overlay-installed system ────────
+# ── Uninstall mode ─────────────────────────────────────────────────────────
 uninstall_mode() {
     need_root
     detect_arch_based
@@ -2368,7 +724,6 @@ uninstall_mode() {
     rm -f /usr/share/applications/jarvis.desktop
     rm -f /etc/NetworkManager/conf.d/wifi-backend.conf 2>/dev/null || true
 
-    # Remove jarvis user/group (don't remove home since /var/lib/jarvis already deleted)
     userdel jarvis 2>/dev/null || true
     groupdel jarvis 2>/dev/null || true
 
@@ -2387,24 +742,45 @@ uninstall_mode() {
 
 # ── Main ───────────────────────────────────────────────────────────────────
 main() {
-    # Overlay-install mode: add JarvisOS components to existing Arch system
+    # ── Overlay / install-packages mode ──────────────────────────────────
     if [[ "${1:-}" == "--install-packages" || "${1:-}" == "--overlay" ]]; then
         OVERLAY_MODE="${1}"
-        install_packages_mode
-        exit 0
+        # Read model selection written by task-base-install.sh before chroot
+        JARVIS_MODEL=$(cat /tmp/.jarvis-model-choice 2>/dev/null \
+            | tr -cd '[:alnum:]:.-' | head -c 64)
+        [ -z "${JARVIS_MODEL}" ] && JARVIS_MODEL="qwen3:4b"
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "Root required — re-launching with sudo"
+            exec sudo bash "${BASH_SOURCE[0]}" "${OVERLAY_MODE}"
+        fi
+
+        export JARVIS_MODEL OVERLAY_MODE
+
+        # Locate and dispatch to task-overlay-detect.sh
+        local _tasks
+        if ! _tasks=$(_find_tasks_dir 2>/dev/null); then
+            # Fallback: try standard install path
+            if [ -d "/usr/share/jarvis-install/tasks" ]; then
+                _tasks="/usr/share/jarvis-install/tasks"
+            else
+                die "Cannot find task scripts. Expected at iso-build-scripts/tasks/ or /tmp/jarvis-tasks/."
+            fi
+        fi
+        exec bash "${_tasks}/task-overlay-detect.sh"
     fi
 
-    # Uninstall mode: remove JarvisOS components from overlay-installed system
+    # ── Uninstall mode ────────────────────────────────────────────────────
     if [[ "${1:-}" == "--uninstall" || "${1:-}" == "--remove" ]]; then
         uninstall_mode
         exit 0
     fi
 
+    # ── Full disk install mode ────────────────────────────────────────────
     need_root
     check_deps
     detect_uefi
 
-    # Load keymap if set
     [ -f /etc/vconsole.conf ] && source /etc/vconsole.conf 2>/dev/null || true
     [ -n "${KEYMAP:-}" ] && loadkeys "${KEYMAP}" 2>/dev/null || true
 
@@ -2439,35 +815,45 @@ main() {
 
     trap cleanup_mounts EXIT
 
+    # Create state file for task scripts
+    JARVIS_STATE_FILE=$(mktemp /tmp/jarvis-state-XXXXXX.sh)
+    _write_state_file
+
+    # Export all settings for task scripts
+    export TARGET_DISK PARTITION_MODE FS_TYPE SWAP_SIZE MOUNT_ROOT
+    export IS_EFI HOSTNAME_VAL NEW_USER USER_PASS ROOT_PASS
+    export BOOT_LOADER LOCALE TIMEZONE KEYMAP
+    export JARVIS_MODEL JARVIS_STATE_FILE KERNEL_PKG
+    export INSTALLER_PATH; INSTALLER_PATH="$(realpath "${BASH_SOURCE[0]}")"
+
+    # ── Run install tasks in sequence ─────────────────────────────────────
+    run_task task-partition.sh
+
+    # After manual partition, re-read FS_TYPE from state file
     if [ "${PARTITION_MODE}" = "manual" ]; then
-        info "Formatting and mounting partitions..."
-        manual_format_and_mount
-    else
-        info "Partitioning ${TARGET_DISK}..."
-        partition_disk
-        info "Formatting partitions..."
-        format_and_mount
+        # shellcheck source=/dev/null
+        source "${JARVIS_STATE_FILE}"
+        export FS_TYPE
     fi
 
-    install_system
+    run_task task-base-install.sh
+    run_task task-kernel.sh
 
-    info "Checking for linux-jarvisos kernel..."
-    ensure_kernel
+    # Read KERNEL_PKG back from state file (written by task-kernel.sh)
+    # shellcheck source=/dev/null
+    source "${JARVIS_STATE_FILE}"
+    export KERNEL_PKG="${KERNEL_PKG:-linux}"
 
-    info "Generating fstab..."
-    generate_fstab
+    run_task task-fstab.sh
+    run_task task-configure.sh
+    run_task task-bootloader.sh
+    run_task task-swap.sh
 
-    info "Configuring system..."
-    configure_system
-
-    info "Installing bootloader..."
-    install_bootloader
-
-    create_swapfile
-
+    rm -f "${JARVIS_STATE_FILE}"
     trap - EXIT
     cleanup_mounts
 
+    # ── Success banner ────────────────────────────────────────────────────
     clear
     echo ""
     echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════════════╗${NC}"
