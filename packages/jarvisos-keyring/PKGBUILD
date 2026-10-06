@@ -1,0 +1,42 @@
+# Maintainer: JarvisOS Team <https://github.com/JarvisOSLinux>
+#
+# Before building: generate and export the org GPG key into this directory.
+#
+#   # Generate (one-time, store private key securely offline):
+#   gpg --full-gen-key
+#     Key type: RSA, 4096 bit
+#     Expiry:   0 (never)
+#     Name:     JarvisOS Package Signing
+#     Email:    packages@jarvisos.org
+#
+#   # Export public keyring:
+#   gpg --export --armor packages@jarvisos.org > jarvisos.gpg
+#
+#   # Get fingerprint for jarvisos-trusted:
+#   gpg --fingerprint packages@jarvisos.org
+#   # Add the full 40-char fingerprint (no spaces) to jarvisos-trusted, one per line.
+#
+pkgname=jarvisos-keyring
+pkgver=20260804
+pkgrel=1
+pkgdesc='JarvisOS PGP keyring for package signature verification'
+arch=(any)
+url='https://github.com/JarvisOSLinux/jarvisos'
+license=(GPL-3.0-only)
+depends=(pacman)
+install=jarvisos-keyring.install
+source=(
+    jarvisos.gpg
+    jarvisos-trusted
+    jarvisos-revoked
+)
+sha256sums=(SKIP SKIP SKIP)
+
+package() {
+    install -Dm644 jarvisos.gpg \
+        "$pkgdir/usr/share/pacman/keyrings/jarvisos.gpg"
+    install -Dm644 jarvisos-trusted \
+        "$pkgdir/usr/share/pacman/keyrings/jarvisos-trusted"
+    install -Dm644 jarvisos-revoked \
+        "$pkgdir/usr/share/pacman/keyrings/jarvisos-revoked"
+}

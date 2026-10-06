@@ -1,0 +1,17 @@
+################################################################################
+################# JarvisOS Package Repository Mirror List #####################
+################################################################################
+# Upstream: https://github.com/JarvisOSLinux/jarvisos
+#
+# Mirror format: Server = https://example.com/repo/$arch/$repo
+#   $arch = x86_64
+#   $repo = jarvisos
+#
+# Update URL after Cloudflare R2 bucket creation:
+#   1. Create bucket: jarvisos-packages
+#   2. Enable public access → copy r2.dev URL
+#   3. (Optional) CNAME packages.jarvisos.org → r2.dev subdomain
+################################################################################
+
+## Primary — Cloudflare R2
+Server = https://packages.jarvisos.org/repo/$arch/$repo

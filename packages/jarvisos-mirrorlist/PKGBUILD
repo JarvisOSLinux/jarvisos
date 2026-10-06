@@ -1,0 +1,15 @@
+# Maintainer: JarvisOS Team <https://github.com/JarvisOSLinux>
+pkgname=jarvisos-mirrorlist
+pkgver=20260804
+pkgrel=1
+pkgdesc='JarvisOS package repository mirror list'
+arch=(any)
+url='https://github.com/JarvisOSLinux/jarvisos'
+license=(GPL-3.0-only)
+source=(jarvisos-mirrorlist)
+sha256sums=(SKIP)
+
+package() {
+    install -Dm644 jarvisos-mirrorlist \
+        "$pkgdir/etc/pacman.d/jarvisos-mirrorlist"
+}

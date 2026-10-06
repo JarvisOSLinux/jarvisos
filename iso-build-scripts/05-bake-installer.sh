@@ -96,6 +96,18 @@ sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-install"
 sudo chown root:root "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-install"
 echo -e "${GREEN}✓ /usr/local/bin/jarvis-install installed${NC}"
 
+# ── Copy task scripts alongside installer ─────────────────────────────────────
+TASKS_SRC="${SCRIPTS_DIR}/tasks"
+if [ -d "${TASKS_SRC}" ]; then
+    sudo mkdir -p "${SQUASHFS_ROOTFS}/usr/share/jarvis-install/tasks"
+    sudo cp "${TASKS_SRC}/"*.sh "${SQUASHFS_ROOTFS}/usr/share/jarvis-install/tasks/"
+    sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/share/jarvis-install/tasks/"*.sh
+    sudo chown -R root:root "${SQUASHFS_ROOTFS}/usr/share/jarvis-install/tasks"
+    echo -e "${GREEN}✓ Task scripts installed at /usr/share/jarvis-install/tasks/${NC}"
+else
+    echo -e "${YELLOW}Warning: tasks/ directory not found at ${TASKS_SRC}${NC}" >&2
+fi
+
 # ── TTY1 auto-login as root ───────────────────────────────────────────────────
 # On the live ISO, TTY1 auto-logs in as root and launches the TUI installer.
 # No SDDM on the live environment — the installer configures and enables
