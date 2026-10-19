@@ -24,12 +24,7 @@ SCRIPTS_DIR="${PROJECT_ROOT}${SCRIPTS_DIR}"
 BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 BUILD_DEPS_DIR="${PROJECT_ROOT}${BUILD_DEPS_DIR}"
-# Use submodule if initialized, otherwise auto-clone
-if [ -d "${PROJECT_ROOT}/Project-JARVIS" ] && [ -f "${PROJECT_ROOT}/Project-JARVIS/requirements.txt" ]; then
-    PROJECT_JARVIS="${PROJECT_ROOT}/Project-JARVIS"
-else
-    PROJECT_JARVIS="/tmp/jarvisos-Project-JARVIS"
-fi
+PROJECT_JARVIS="${PROJECT_ROOT}/Project-JARVIS"
 
 # Colors
 RED='\033[0;31m'
@@ -50,13 +45,11 @@ if [ ! -d "${SQUASHFS_ROOTFS}/usr/bin" ] && [ ! -d "${SQUASHFS_ROOTFS}/bin" ]; t
     exit 1
 fi
 
-# Auto-clone Project-JARVIS if submodule not initialized
-if [ ! -d "${PROJECT_JARVIS}" ] || [ ! -f "${PROJECT_JARVIS}/requirements.txt" ]; then
-    echo -e "${BLUE}Project-JARVIS submodule not found — cloning...${NC}"
-    git clone --depth 1 -b linux-integration-preparation \
-        https://github.com/YakupAtahanov/Project-JARVIS.git \
-        "${PROJECT_JARVIS}"
-    echo -e "${GREEN}✓ Project-JARVIS cloned${NC}"
+# Fetch the sibling repos (sources.conf) that are not checked out yet
+bash "${PROJECT_ROOT}/iso-build-scripts/fetch-sources.sh" Project-JARVIS dmcp dispatch || true
+if [ ! -f "${PROJECT_JARVIS}/requirements.txt" ]; then
+    echo -e "${RED}Error: Project-JARVIS not found — check sources.conf${NC}" >&2
+    exit 1
 fi
 
 # Determine chroot command (distro-aware error messages via build-utils.sh)
@@ -346,7 +339,7 @@ _DMCP_BINARY_READY=0
 
 echo -e "${BLUE}Installing dmcp (MCP server manager)...${NC}"
 
-# Path A: submodule present — build from source
+# Path A: source present — build from source
 if [ -d "${DMCP_DIR}" ] && [ -f "${DMCP_DIR}/Cargo.toml" ]; then
     if command -v cargo &>/dev/null; then
         (cd "${DMCP_DIR}" && cargo build --release 2>&1) || {
@@ -358,7 +351,7 @@ if [ -d "${DMCP_DIR}" ] && [ -f "${DMCP_DIR}/Cargo.toml" ]; then
     fi
 fi
 
-# Path B: no submodule or cargo missing — download pre-built binary from GitHub Releases
+# Path B: no source or cargo missing — download pre-built binary from GitHub Releases
 if [ "${_DMCP_BINARY_READY}" = "0" ]; then
     echo -e "${BLUE}Downloading dmcp binary from GitHub Releases...${NC}"
     if ! command -v gh &>/dev/null; then
@@ -432,7 +425,7 @@ _DISPATCH_BINARY_READY=0
 
 echo -e "${BLUE}Installing dispatch (MCP task orchestrator)...${NC}"
 
-# Path A: submodule present — build from source
+# Path A: source present — build from source
 if [ -f "${DISPATCH_DIR}/Cargo.toml" ]; then
     if command -v cargo &>/dev/null; then
         (cd "${DISPATCH_DIR}" && cargo build --release 2>&1) || {
@@ -444,7 +437,7 @@ if [ -f "${DISPATCH_DIR}/Cargo.toml" ]; then
     fi
 fi
 
-# Path B: no submodule or cargo missing — download pre-built binary
+# Path B: no source or cargo missing — download pre-built binary
 if [ "${_DISPATCH_BINARY_READY}" = "0" ]; then
     echo -e "${BLUE}Downloading dispatch binary from GitHub Releases...${NC}"
     if ! command -v gh &>/dev/null; then

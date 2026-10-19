@@ -3,7 +3,7 @@
 # linux-jarvisos — Linux kernel with JARVIS AI integration drivers
 # linux-jarvisos-headers — Build headers for out-of-tree modules
 #
-# KERNEL_SRC must be exported to the absolute path of the linux-jarvisos/ submodule
+# KERNEL_SRC must be exported to the absolute path of the linux-jarvisos/ checkout
 # before calling makepkg. scripts/03b-build-kernel.sh does this automatically.
 #
 # Usage (standalone):
@@ -25,7 +25,7 @@ source=()
 sha256sums=()
 
 # Kernel source is provided by the caller via env var — no download needed.
-_ksrc="${KERNEL_SRC:?KERNEL_SRC must be set to the absolute path of the linux-jarvisos/ submodule}"
+_ksrc="${KERNEL_SRC:?KERNEL_SRC must be set to the absolute path of the linux-jarvisos/ checkout}"
 _localversion='-jarvisos'
 
 prepare() {

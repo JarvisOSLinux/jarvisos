@@ -233,11 +233,11 @@ fi
 hdr "Project-JARVIS Daemon"
 
 if [[ ! -f "${PROJECT_JARVIS}/pyproject.toml" ]]; then
-    info "Initialising Project-JARVIS submodule..."
-    git -C "$REPO_ROOT" submodule update --init Project-JARVIS
+    info "Fetching Project-JARVIS..."
+    bash "${REPO_ROOT}/iso-build-scripts/fetch-sources.sh" Project-JARVIS
 fi
 [[ -f "${PROJECT_JARVIS}/pyproject.toml" ]] \
-    || die "Project-JARVIS submodule empty. Run: git submodule update --init Project-JARVIS"
+    || die "Project-JARVIS not found at ${PROJECT_JARVIS}. See sources.conf"
 
 if ! getent passwd "$JARVIS_USER" &>/dev/null; then
     sudo useradd -r -g "$JARVIS_GROUP" -G "$JARVIS_GROUP" \

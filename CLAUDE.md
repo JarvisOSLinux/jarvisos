@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The AI is a first-class kernel citizen via a custom character device (`/dev/jarvis`). Three layers:
 
-1. **`linux-jarvisos/`** — kernel submodule with JARVIS drivers (`drivers/jarvis/`)
-2. **`Project-JARVIS/`** — AI daemon submodule (dispatch + dmcp + contextor)
+1. **`linux-jarvisos/`** — kernel source (cloned, see `sources.conf`) with JARVIS drivers (`drivers/jarvis/`)
+2. **`Project-JARVIS/`** — AI daemon repo (dispatch + dmcp + contextor)
 3. **`iso-build-scripts/`** — ISO build pipeline that layers everything onto a base Arch ISO
 
 ## Design Principles
@@ -96,15 +96,15 @@ LLM (Ollama) → dispatch (tool routing) → dmcp (MCP server registry)
 | `jarvis_dibs.c` | Zero-copy DIBS buffer for large inference payloads |
 | `include/uapi/linux/jarvis.h` | Userspace API (ioctls, structs, enums) |
 
-PKGBUILD at `packages/linux-jarvisos/PKGBUILD` — reads `KERNEL_SRC` env var pointing at the submodule.
+PKGBUILD at `packages/linux-jarvisos/PKGBUILD` — reads `KERNEL_SRC` env var pointing at the `linux-jarvisos/` checkout.
 
-### Project-JARVIS Submodule (`Project-JARVIS/`)
+### Project-JARVIS (`Project-JARVIS/`)
 
 - **`dispatch/`** — Rust crate; routes user intent to MCP tools (keyword fallback, embedding-first when available)
 - **`dmcp/`** — Rust crate; MCP server registry and lifecycle manager
 - **`contextor/`** — Rust crate; context/memory layer
 
-Submodule tracks branch `main`. `dispatch/` and `dmcp/` also exist as separate top-level submodules (mirrors of what's inside `Project-JARVIS/`). Pinned commits for all four tracked subsystems (`dispatch`, `dmcp`, `Project-JARVIS`, `linux-jarvisos`) live in `versions.lock` at the project root, auto-updated by `.github/workflows/track-subsystems.yml` when a subsystem repo pushes to its default branch — the ISO build pipeline reads this file to clone the correct revision of each component.
+The repos are cloned side by side by `iso-build-scripts/fetch-sources.sh` from `sources.conf` (name, URL, branch); an existing checkout is never touched. `versions.lock` and `track-subsystems.yml` still record subsystem commits but no build script reads the lock.
 
 ### ISO Pipeline (`iso-build-scripts/`)
 
@@ -113,7 +113,7 @@ Steps are idempotent and can be resumed with `make rest`. Each numbered script (
 - Step 4 (`04-bake-jarvis.sh`) — copies `Project-JARVIS` into the rootfs chroot, creates Python venv, installs Ollama, installs `jarvis.service`
 - Step 5 (`05-bake-installer.sh`) — installs the TUI installer (repo-root `jarvis-install.sh`) which auto-launches on TTY1 in the live environment
 
-`05-bake-calamares.sh` no longer exists (removed); the Makefile uses `05-bake-installer.sh`. The `cachyos-calamares` submodule is fully removed from `.gitmodules` — see Submodule Map below.
+`05-bake-calamares.sh` no longer exists (removed); the Makefile uses `05-bake-installer.sh`. `cachyos-calamares` is fully removed.
 
 ### Standalone Agent Root Files
 
@@ -133,30 +133,31 @@ Currently in progress: post-install JARVIS service configuration and model selec
 
 Two root/iso-build-scripts scripts build `linux-jarvisos` without the full ISO pipeline:
 - `build-kernel.sh` (repo root) — build (and optionally `pacman -U` install) the kernel on the local Arch host; supports `--clean`, `--force`, `SKIP_BUILD=1`
-- `iso-build-scripts/vps-kernel-build.sh` — provisions a throwaway Linode VPS (48-core, needs `JARVIS_LINODE_TOKEN`) to build the kernel package remotely when local hardware is too slow, fetches the built `.pkg.tar.zst`s, then destroys the VPS (`--keep-vps` to skip teardown). Mirrors `.github/workflows/kernel-build.yml`, which does the same thing in CI on pushes touching `linux-jarvisos/**` or `packages/linux-jarvisos/**`.
+- `iso-build-scripts/vps-kernel-build.sh` — provisions a throwaway Linode VPS (48-core, needs `JARVIS_LINODE_TOKEN`) to build the kernel package remotely when local hardware is too slow, fetches the built `.pkg.tar.zst`s, then destroys the VPS (`--keep-vps` to skip teardown). Mirrors `.github/workflows/kernel-build.yml`, which does the same thing in CI on pushes touching `packages/linux-jarvisos/**`.
 
-## Submodule Map
+## Sibling Repos (no submodules)
+
+Declared in `sources.conf`, all under `github.com/JarvisOSLinux`:
 
 ```
-linux-jarvisos/    → git@github.com:JarvisOSLinux/linux-jarvisos.git  (branch: stable)
-Project-JARVIS/    → git@github.com:JarvisOSLinux/Project-JARVIS.git  (branch: main)
-dmcp/              → git@github.com:YakupAtahanov/dmcp.git
-dispatch/          → git@github.com:YakupAtahanov/dispatch.git
+linux-jarvisos/    (branch: stable)
+Project-JARVIS/    (branch: main)
+dmcp/              (branch: main)
+dispatch/          (branch: main)
 ```
 
-`cachyos-calamares` has been removed from `.gitmodules` entirely — it is gone, not just discontinued. Ignore any stale references to it elsewhere (e.g. README.md still describes a Calamares install flow; the actual installer is `jarvis-install.sh`, see below).
+`cachyos-calamares` is gone, not just discontinued. Ignore any stale references to it elsewhere (e.g. README.md still describes a Calamares install flow; the actual installer is `jarvis-install.sh`, see below).
 
 ### Why dispatch/ and dmcp/ appear twice
 
-`Project-JARVIS` carries its own copies as submodules under `deps/rust/`.
-The top-level `dispatch/` and `dmcp/` in this repo exist for the ISO build
-pipeline — `03b-build-kernel.sh` and `04-bake-jarvis.sh` need direct access
-to the Rust crates without navigating through `Project-JARVIS/`. Both
-pointers must track the same commit; update them together.
+`Project-JARVIS` keeps its own submodules under `deps/rust/`; those stay.
+The top-level `dispatch/` and `dmcp/` here are plain clones for the ISO build
+(`04-bake-jarvis.sh` builds the Rust crates directly). They follow `main`
+and can differ from the commits `Project-JARVIS` pins.
 
-Initialize all submodules:
+Fetch the sibling repos (the build scripts also do this on demand):
 ```bash
-git submodule update --init --recursive
+bash iso-build-scripts/fetch-sources.sh   # or: fetch-sources.sh dmcp
 ```
 
 ## Security Research Context

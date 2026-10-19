@@ -60,7 +60,7 @@ Full asset table, attacker profiles, and the OpenClaw CVE-by-CVE comparison (JAR
 
 - [ ] **LSM integration (SELinux / AppArmor)** for `jarvis-daemon`, as defense-in-depth below the userspace policy tier.
 
-- [ ] **Pin `linux-jarvisos` submodule to a commit SHA, not a branch ref**, to make upstream CVE patches a deliberate action rather than silent drift.
+- [ ] **Pin `linux-jarvisos` in `sources.conf` to a tag or commit, not a branch**, to make upstream CVE patches a deliberate action rather than silent drift.
 
 - [ ] **`SECURITY.md` at this repo's root.** Project-JARVIS already has one (`Project-JARVIS/SECURITY.md`); this repo (`jarvisos`) does not yet.
 
@@ -96,7 +96,7 @@ Most "AI-integrated" desktops are just a chatbot running on top of a stock kerne
 
 ```
 jarvisos/
-├── linux-jarvisos/               # linux-jarvisos kernel source (submodule, branch jarvisos-7.0-stable)
+├── linux-jarvisos/               # linux-jarvisos kernel source (cloned by fetch-sources.sh)
 │   ├── drivers/jarvis/           # JARVIS AI kernel drivers
 │   │   ├── jarvis_core.c         # /dev/jarvis misc device + query ring buffer
 │   │   ├── jarvis_sysmon.c       # CPU/memory/thermal metrics
@@ -110,7 +110,7 @@ jarvisos/
 │   │   ├── PKGBUILD              # Produces linux-jarvisos + linux-jarvisos-headers
 │   │   └── linux-jarvisos.install
 │   └── calamares-config/         # Calamares installer branding + configuration
-├── Project-JARVIS/               # JARVIS daemon + tooling (submodule)
+├── Project-JARVIS/               # JARVIS daemon + tooling (cloned by fetch-sources.sh)
 ├── scripts/                      # ISO build pipeline
 │   ├── build.config              # Build paths and ISO filename
 │   ├── Makefile                  # Orchestrates all build steps
@@ -183,17 +183,17 @@ sudo pacman -S base-devel bc flex bison openssl libelf pahole ccache
 sudo pacman -S ccache
 ```
 
-### Initialize the kernel submodule
+### Fetch the kernel source
 
 ```bash
 git clone --recursive https://github.com/YourUsername/jarvisos.git
 cd jarvisos
 
 # If already cloned without --recursive:
-git submodule update --init linux-jarvisos
+bash iso-build-scripts/fetch-sources.sh linux-jarvisos
 ```
 
-The `linux-jarvisos/` submodule tracks the `jarvisos-7.0-stable` branch, which is the upstream 7.0.2 kernel tree plus the JARVIS driver tree under `drivers/jarvis/`.
+The `linux-jarvisos/` clone tracks the `jarvisos-7.0-stable` branch, which is the upstream 7.0.2 kernel tree plus the JARVIS driver tree under `drivers/jarvis/`.
 
 ### Build modes
 
@@ -628,9 +628,9 @@ rm linux-jarvisos/.config
 bash scripts/03b-build-kernel.sh --host-install
 ```
 
-**Kernel submodule is empty**
+**Kernel source is missing**
 ```bash
-git submodule update --init --recursive linux-jarvisos
+bash iso-build-scripts/fetch-sources.sh linux-jarvisos
 ```
 
 ### ISO build
@@ -784,7 +784,7 @@ Areas that need work:
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
 
-The `linux-jarvisos/` submodule is GPL-2.0 (Linux kernel).
+The `linux-jarvisos/` source is GPL-2.0 (Linux kernel).
 
 ---
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Step 3b: Build linux-jarvisos custom kernel packages (7.0.2)
 #
-# Builds the JARVIS-integrated Linux kernel from the linux-jarvisos/ submodule using
+# Builds the JARVIS-integrated Linux kernel from the linux-jarvisos/ checkout using
 # the PKGBUILD at packages/linux-jarvisos/PKGBUILD, producing two packages:
 #
 #   linux-jarvisos         — kernel image + modules
@@ -85,9 +85,11 @@ echo -e "${BLUE}Checking build prerequisites...${NC}"
 # Kernel source must be present — skip check when downloading pre-built packages
 if [[ "${DOWNLOAD_RELEASE:-0}" != "1" && "${DOWNLOAD_KERNEL_RELEASE:-0}" != "1" ]]; then
     if [ ! -f "${KERNEL_SRC}/Makefile" ]; then
+        bash "${PROJECT_ROOT}/iso-build-scripts/fetch-sources.sh" linux-jarvisos || true
+    fi
+    if [ ! -f "${KERNEL_SRC}/Makefile" ]; then
         echo -e "${RED}FATAL: linux-jarvisos/ kernel source not found at ${KERNEL_SRC}${NC}" >&2
-        echo -e "${YELLOW}Use --download-release to fetch pre-built packages, or init the submodule:${NC}"
-        echo -e "${YELLOW}  git submodule update --init linux-jarvisos${NC}"
+        echo -e "${YELLOW}Use --download-release to fetch pre-built packages, or check sources.conf${NC}"
         exit 1
     fi
 fi

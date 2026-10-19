@@ -7,7 +7,6 @@ on:
       - main
       - pre-deeptech
     paths:
-      - 'linux-jarvisos/**'
       - 'packages/linux-jarvisos/**'
 
 jobs:
@@ -18,13 +17,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: false
 
-      - name: Checkout linux-jarvisos submodule
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init linux-jarvisos
+      - name: Fetch linux-jarvisos
+        run: bash iso-build-scripts/fetch-sources.sh linux-jarvisos
 
       - name: Install tools
         run: |
