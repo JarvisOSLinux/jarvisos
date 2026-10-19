@@ -10,7 +10,7 @@
 #
 # Prerequisites:
 #   sudo pacman -S base-devel bc flex bison pahole libelf
-#   git submodule update --init linux-jarvisos
+#   (linux-jarvisos/ is cloned automatically; see sources.conf)
 #
 # Optional: install ccache for much faster incremental rebuilds (~3-5× speedup).
 set -euo pipefail
@@ -89,8 +89,9 @@ echo ""
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 hdr "Prerequisites"
 
+[[ -f "${KERNEL_SRC}/Makefile" ]] || bash "${REPO_ROOT}/iso-build-scripts/fetch-sources.sh" linux-jarvisos
 [[ -f "${KERNEL_SRC}/Makefile" ]] \
-    || die "linux-jarvisos/ submodule not populated at ${KERNEL_SRC}\n       Run: git submodule update --init linux-jarvisos"
+    || die "linux-jarvisos/ not found at ${KERNEL_SRC}"
 
 [[ -f "${PKGBUILD_DIR}/PKGBUILD" ]] \
     || die "PKGBUILD not found at ${PKGBUILD_DIR}/PKGBUILD"

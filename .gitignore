@@ -228,3 +228,9 @@ FIRMWARE_FIXES.md
 *.png
 error.txt
 *.zst
+
+# Sibling repos cloned by iso-build-scripts/fetch-sources.sh (see sources.conf)
+/Project-JARVIS/
+/dmcp/
+/dispatch/
+/linux-jarvisos/

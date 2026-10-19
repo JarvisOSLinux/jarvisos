@@ -29,7 +29,7 @@ echo -e "${BLUE}Detected distribution: ${DISTRO}${NC}"
 # - p7zip / 7zip: for extracting the source Arch Linux ISO
 # - dosfstools: for mkfs.fat (creating EFI boot image)
 # - fakeroot: for makepkg without root (calamares-config package build)
-# - git: for submodule management
+# - git: for fetching the sibling repos (sources.conf)
 # - curl: for downloading packages during build
 # - wget: fallback downloader
 # - python3: for various build scripts

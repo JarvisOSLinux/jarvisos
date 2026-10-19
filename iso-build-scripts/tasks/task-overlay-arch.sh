@@ -96,8 +96,8 @@ _install_linux_jarvisos() {
     fi
 
     if [ ! -f "${_kernel_src}/Makefile" ]; then
-        warn "linux-jarvisos submodule not initialized — ${_kernel_src}/Makefile missing"
-        warn "Run: git submodule update --init linux-jarvisos"
+        warn "linux-jarvisos source missing — ${_kernel_src}/Makefile not found"
+        warn "Run: bash iso-build-scripts/fetch-sources.sh linux-jarvisos"
         warn "linux-jarvisos not installed."
         return 0
     fi
