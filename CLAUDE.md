@@ -104,7 +104,7 @@ PKGBUILD at `packages/linux-jarvisos/PKGBUILD` — reads `KERNEL_SRC` env var po
 - **`dmcp/`** — Rust crate; MCP server registry and lifecycle manager
 - **`contextor/`** — Rust crate; context/memory layer
 
-The repos are cloned side by side by `iso-build-scripts/fetch-sources.sh` from `sources.conf` (name, URL, branch); an existing checkout is never touched. `versions.lock` and `track-subsystems.yml` still record subsystem commits but no build script reads the lock.
+The repos are cloned side by side by `iso-build-scripts/fetch-sources.sh` from `sources.conf` (name, URL, branch); an existing checkout is never touched. Commit pinning is not done: to pin a repo, put a tag or SHA in the branch column of `sources.conf`.
 
 ### ISO Pipeline (`iso-build-scripts/`)
 
