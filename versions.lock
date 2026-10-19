@@ -1,7 +1,7 @@
-# Pinned subsystem commits — updated automatically by track-subsystems.yml
-# when any subsystem repo pushes to its default branch.
-# ISO build pipeline reads this to clone the correct revision of each component.
-dispatch=8363f46dc9d7d076677ac29768c32b6ff39687fe
-dmcp=b33c7ecb6d5b40ef7c1b6ad983fb616631510c7d
-Project-JARVIS=14552c62060eb2fc8d13dc37b199456e74ff181d
-linux-jarvisos=aa796b301a06d47f5252405671c2204112c24840
+# Pinned sibling-repo commits, read by iso-build-scripts/fetch-sources.sh.
+# Updated by .github/workflows/track-subsystems.yml when a repo pushes, or by
+# fetch-sources.sh --update-lock.
+Project-JARVIS=5812ef982902b3d8ae9033eb1e0cafc0d98ef755
+dmcp=dcc19801b92fee3d736742a8ca976122fce6c5a1
+dispatch=6319da34ebf6cd4e1ba9669017abed415cbd1afe
+linux-jarvisos=45b6eb9563fa82658ae839ed7b693bf8bcc868af
