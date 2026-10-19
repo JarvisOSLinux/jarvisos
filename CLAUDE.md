@@ -104,7 +104,7 @@ PKGBUILD at `packages/linux-jarvisos/PKGBUILD` — reads `KERNEL_SRC` env var po
 - **`dmcp/`** — Rust crate; MCP server registry and lifecycle manager
 - **`contextor/`** — Rust crate; context/memory layer
 
-The repos are cloned side by side by `iso-build-scripts/fetch-sources.sh` from `sources.conf` (name, URL, branch); an existing checkout is never touched. `versions.lock` and `track-subsystems.yml` still record subsystem commits but no build script reads the lock.
+The repos are cloned side by side by `iso-build-scripts/fetch-sources.sh` from `sources.conf` (name, URL, branch); an existing checkout is never touched. Each repo is checked out at the commit recorded in `versions.lock` (updated by `.github/workflows/track-subsystems.yml` when a repo pushes, or by `fetch-sources.sh --update-lock`). `JARVIS_SOURCES_FLOAT=1` takes branch heads instead. The workflow is triggered by each subsystem's `notify-parent.yml`, which needs a valid `ORG_PAT` secret.
 
 ### ISO Pipeline (`iso-build-scripts/`)
 
@@ -152,7 +152,7 @@ dispatch/          (branch: main)
 
 `Project-JARVIS` keeps its own submodules under `deps/rust/`; those stay.
 The top-level `dispatch/` and `dmcp/` here are plain clones for the ISO build
-(`04-bake-jarvis.sh` builds the Rust crates directly). They follow `main`
+(`04-bake-jarvis.sh` builds the Rust crates directly). They follow the lock
 and can differ from the commits `Project-JARVIS` pins.
 
 Fetch the sibling repos (the build scripts also do this on demand):
