@@ -5,16 +5,16 @@
 #   1. linux-jarvisos kernel with JARVIS drivers (Arch/CachyOS only)
 #   2. /dev/jarvis udev rules + jarvis group + module auto-load
 #   3. Project-JARVIS daemon (dispatch gateway) with Python venv
-#   4. Ollama + RAM-appropriate LLM model
-#   5. systemd services (jarvis.service, ollama.service)
+#   4. llama.cpp (llama-server) + RAM-appropriate LLM model
+#   5. systemd services (jarvis.service)
 #   6. /etc/jarvis/ configuration
 #
 # Usage:
 #   ./install-jarvis.sh                    # Full install
 #   ./install-jarvis.sh --daemon-only      # Skip kernel install
-#   ./install-jarvis.sh --no-model         # Skip Ollama model pull
+#   ./install-jarvis.sh --no-model         # Skip model download
 #   ./install-jarvis.sh --clean            # Wipe build cache + reinstall everything
-#   JARVIS_MODEL=qwen3:14b ./install-jarvis.sh
+#   JARVIS_MODEL=Qwen/Qwen3-14B-GGUF:Q4_K_M ./install-jarvis.sh
 #
 # Supported distros:
 #   Kernel install : Arch Linux, CachyOS (requires makepkg)
@@ -133,12 +133,12 @@ select_model() {
     if [[ -n "$JARVIS_MODEL" ]]; then
         info "Model: ${JARVIS_MODEL} (user-specified)"; return
     fi
-    if   (( ram_gb >= 32 )); then JARVIS_MODEL="qwen3:14b"
-    elif (( ram_gb >= 16 )); then JARVIS_MODEL="qwen2.5:7b"
-    elif (( ram_gb >= 8  )); then JARVIS_MODEL="qwen2.5:3b"
+    if   (( ram_gb >= 32 )); then JARVIS_MODEL="Qwen/Qwen3-14B-GGUF:Q4_K_M"
+    elif (( ram_gb >= 16 )); then JARVIS_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M"
+    elif (( ram_gb >= 8  )); then JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
     else
         warn "< 8 GB RAM — model skipped. Set JARVIS_MODEL manually."
-        NO_MODEL=1; JARVIS_MODEL="qwen2.5:3b"
+        NO_MODEL=1; JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
     fi
     info "RAM: ${ram_gb}GB → model: ${JARVIS_MODEL}"
 }
@@ -274,26 +274,29 @@ fi
 sudo chown -R "${JARVIS_USER}:${JARVIS_GROUP}" "$VENV_DIR"
 ok "Python venv ready: ${VENV_DIR}"
 
-# ── Ollama ────────────────────────────────────────────────────────────────────
-hdr "Ollama"
+# ── llama.cpp ─────────────────────────────────────────────────────────────────
+hdr "llama.cpp"
 
-if ! command -v ollama &>/dev/null; then
-    info "Installing Ollama..."
-    curl -fsSL https://ollama.com/install.sh | sh
-    ok "Ollama installed"
+if command -v llama-server &>/dev/null; then
+    ok "llama-server: $(command -v llama-server)"
+elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm --needed llama-cpp ggml-vulkan vulkan-icd-loader
+    ok "llama-cpp installed"
+elif command -v apt-get &>/dev/null; then
+    sudo bash -c ". '${REPO_ROOT}/iso-build-scripts/tasks/lib.sh'; install_llama_cpp_generic apt"
+elif command -v dnf &>/dev/null; then
+    sudo bash -c ". '${REPO_ROOT}/iso-build-scripts/tasks/lib.sh'; install_llama_cpp_generic dnf"
 else
-    ok "Ollama: $(ollama --version 2>/dev/null | head -1)"
-fi
-
-if systemctl list-unit-files ollama.service &>/dev/null 2>&1; then
-    sudo systemctl enable --now ollama.service 2>/dev/null || true
-    ok "ollama.service enabled"
+    die "No supported package manager for installing llama.cpp"
 fi
 
 if (( ! NO_MODEL )); then
     info "Pulling ${JARVIS_MODEL} (may take several minutes)..."
-    ollama pull "$JARVIS_MODEL" && ok "Model ${JARVIS_MODEL} ready" \
-        || warn "Model pull failed — run: ollama pull ${JARVIS_MODEL}"
+    sudo -u "$JARVIS_USER" env JARVIS_CONFIG_DIR="$CONFIG_DIR" JARVIS_DATA_DIR="$DATA_DIR" \
+        JARVIS_MODELS_DIR="${DATA_DIR}/models" \
+        "${VENV_DIR}/bin/python" -m jarvis.cli model pull "$JARVIS_MODEL" \
+        && ok "Model ${JARVIS_MODEL} ready" \
+        || warn "Model pull failed — run: jarvis model pull ${JARVIS_MODEL}"
 fi
 
 # ── /etc/jarvis/jarvis.conf ───────────────────────────────────────────────────
@@ -302,11 +305,6 @@ hdr "Configuration"
 if [[ ! -f "${CONFIG_DIR}/jarvis.conf" ]]; then
     sudo tee "${CONFIG_DIR}/jarvis.conf" > /dev/null << EOF
 # /etc/jarvis/jarvis.conf — JarvisOS system configuration
-LLM_PROVIDER=ollama
-LLM_MODEL=${JARVIS_MODEL}
-LLM_AUTO_PULL=false
-OLLAMA_HOST=127.0.0.1:11434
-
 JARVIS_CONFIG_DIR=${CONFIG_DIR}
 JARVIS_DATA_DIR=${DATA_DIR}
 JARVIS_LOG_DIR=${LOG_DIR}
@@ -323,6 +321,14 @@ else
     ok "Config already exists: ${CONFIG_DIR}/jarvis.conf"
 fi
 
+# Provider pool: one local llama.cpp model
+if [[ ! -f "${CONFIG_DIR}/providers.json" ]]; then
+    printf '{\n  "providers": [\n    {"name": "local", "type": "llamacpp", "model": "%s"}\n  ]\n}\n' \
+        "$JARVIS_MODEL" | sudo tee "${CONFIG_DIR}/providers.json" > /dev/null
+    sudo chown "${JARVIS_USER}:${JARVIS_GROUP}" "${CONFIG_DIR}/providers.json"
+    ok "Providers: ${CONFIG_DIR}/providers.json"
+fi
+
 # ── systemd service ───────────────────────────────────────────────────────────
 hdr "systemd Services"
 
@@ -330,8 +336,7 @@ sudo tee "${SYSTEMD_DIR}/jarvis.service" > /dev/null << EOF
 [Unit]
 Description=JARVIS AI Kernel Integration Daemon
 Documentation=https://github.com/JarvisOSLinux/jarvisos
-After=network.target ollama.service
-Wants=ollama.service
+After=network.target
 
 [Service]
 Type=simple

@@ -66,15 +66,15 @@ Test in QEMU:
 
 Standalone agent (no ISO needed):
 ```bash
-./test-jarvis-ollama.sh                           # Auto-setup + launch
-JARVIS_MODEL=qwen3:8b ./test-jarvis-ollama.sh     # Force model
-OLLAMA_URL=http://192.168.1.10:11434 ./test-jarvis-ollama.sh
+./test-jarvis.sh                                  # Auto-setup + launch (starts llama-server)
+JARVIS_MODEL=Qwen/Qwen3-8B-GGUF:Q4_K_M ./test-jarvis.sh   # Force model
+LLM_URL=http://192.168.1.10:11445 ./test-jarvis.sh        # Use a running server
 ```
 
 ## Architecture
 
 ```
-LLM (Ollama) → dispatch (tool routing) → dmcp (MCP server registry)
+LLM (llama-server, run by the daemon) → dispatch (tool routing) → dmcp (MCP server registry)
                                         ↓
                           JARVIS Policy Gate (SAFE/ELEVATED/DANGEROUS/FORBIDDEN)
                                         ↓
@@ -110,16 +110,16 @@ The repos are cloned side by side by `iso-build-scripts/fetch-sources.sh` from `
 
 Steps are idempotent and can be resumed with `make rest`. Each numbered script (`01`–`07`) performs one phase; `03b-build-kernel.sh` runs between steps 3 and 4 and is the only step that requires `makepkg` on the host.
 
-- Step 4 (`04-bake-jarvis.sh`) — copies `Project-JARVIS` into the rootfs chroot, creates Python venv, installs Ollama, installs `jarvis.service`
+- Step 4 (`04-bake-jarvis.sh`) — copies `Project-JARVIS` into the rootfs chroot, creates Python venv, installs llama.cpp (`llama-cpp` + Vulkan backend), installs `jarvis.service`
 - Step 5 (`05-bake-installer.sh`) — installs the TUI installer (repo-root `jarvis-install.sh`) which auto-launches on TTY1 in the live environment
 
 `05-bake-calamares.sh` no longer exists (removed); the Makefile uses `05-bake-installer.sh`. `cachyos-calamares` is fully removed.
 
 ### Standalone Agent Root Files
 
-- `jarvis_agent.py` — full agent runtime (voice + text → Ollama → policy-gated shell)
+- `jarvis_agent.py` — full agent runtime (voice + text → llama-server → policy-gated shell)
 - `jarvis-wake.py` — wake-word / lightweight listener front-end
-- `test-jarvis-ollama.sh` — bootstrapper: installs deps, creates venv, selects model by RAM, launches agent
+- `test-jarvis.sh` — bootstrapper: installs deps (incl. `llama-cpp`), creates venv, starts `llama-server` with a model chosen by RAM, launches agent
 
 ## TUI Installer (`jarvis-install.sh`, repo root)
 
