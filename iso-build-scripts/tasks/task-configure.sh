@@ -159,7 +159,6 @@ systemctl enable systemd-resolved.service            2>/dev/null || true
 systemctl enable sddm.service                        2>/dev/null || true
 systemctl enable bluetooth.service                   2>/dev/null || true
 systemctl enable rtkit-daemon.service                2>/dev/null || true
-systemctl enable ollama.service                      2>/dev/null || true
 systemctl enable jarvis.service                      2>/dev/null || true
 systemctl enable jarvis-setup.service                2>/dev/null || true
 systemctl disable iwd.service                        2>/dev/null || true

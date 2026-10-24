@@ -38,7 +38,8 @@ ROOT_PASS=""
 IS_EFI=false
 MOUNT_ROOT="/mnt/jarvis-install"
 PARTITION_MODE=""        # "auto" or "manual"
-JARVIS_MODEL="qwen3:4b"
+JARVIS_DEFAULT_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
+JARVIS_MODEL="${JARVIS_DEFAULT_MODEL}"
 KERNEL_PKG="linux"
 declare -A PART_MOUNT=()
 declare -A PART_FS=()
@@ -230,7 +231,7 @@ JARVIS OS — AI-Powered Arch Linux\n\
 This installer will:\n\
   1. Partition your chosen disk\n\
   2. Bootstrap a base Arch system (pacstrap)\n\
-  3. Install KDE Plasma, Ollama, and the JARVIS AI stack\n\
+  3. Install KDE Plasma, llama.cpp, and the JARVIS AI stack\n\
   4. Configure bootloader, user, and services\n\
   5. Set up the JARVIS AI assistant (model downloads on first boot)\n\
 \n\
@@ -463,10 +464,16 @@ step_ai_model() {
     ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)
     local ram_gb=$(( ram_mb / 1024 ))
 
-    if   [ "${ram_mb}" -ge 16000 ]; then rec_model="llama3.1:8b"
-    elif [ "${ram_mb}" -ge  8000 ]; then rec_model="qwen3:8b"
-    elif [ "${ram_mb}" -ge  4000 ]; then rec_model="qwen3:4b"
-    else                                 rec_model="llama3.2:3b"
+    local m_q4b="Qwen/Qwen3-4B-GGUF:Q4_K_M"
+    local m_q8b="Qwen/Qwen3-8B-GGUF:Q4_K_M"
+    local m_l3b="bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"
+    local m_l8b="bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M"
+    local m_g4b="ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"
+
+    if   [ "${ram_mb}" -ge 16000 ]; then rec_model="${m_l8b}"
+    elif [ "${ram_mb}" -ge  8000 ]; then rec_model="${m_q8b}"
+    elif [ "${ram_mb}" -ge  4000 ]; then rec_model="${m_q4b}"
+    else                                 rec_model="${m_l3b}"
     fi
 
     local _q4b="Qwen3 4B     — balanced quality  (~2.6 GB)"
@@ -475,10 +482,10 @@ step_ai_model() {
     local _l8b="Llama 3.1 8B — high quality      (~4.9 GB)"
     local _g4b="Gemma 3 4B   — Google model      (~3.3 GB)"
     case "${rec_model}" in
-        "qwen3:4b")    _q4b="${_q4b} ★" ;;
-        "qwen3:8b")    _q8b="${_q8b} ★" ;;
-        "llama3.2:3b") _l3b="${_l3b} ★" ;;
-        "llama3.1:8b") _l8b="${_l8b} ★" ;;
+        "${m_q4b}") _q4b="${_q4b} ★" ;;
+        "${m_q8b}") _q8b="${_q8b} ★" ;;
+        "${m_l3b}") _l3b="${_l3b} ★" ;;
+        "${m_l8b}") _l8b="${_l8b} ★" ;;
     esac
 
     local choice
@@ -487,12 +494,12 @@ step_ai_model() {
         --default-item "${rec_model}" \
         --menu "Select AI model to install  (System RAM: ${ram_gb} GB — ★ = recommended)" \
         22 72 6 \
-        "qwen3:4b"    "${_q4b}" \
-        "qwen3:8b"    "${_q8b}" \
-        "llama3.2:3b" "${_l3b}" \
-        "llama3.1:8b" "${_l8b}" \
-        "gemma3:4b"   "${_g4b}" \
-        "none"        "None — skip model download (configure after first boot)" \
+        "${m_q4b}" "${_q4b}" \
+        "${m_q8b}" "${_q8b}" \
+        "${m_l3b}" "${_l3b}" \
+        "${m_l8b}" "${_l8b}" \
+        "${m_g4b}" "${_g4b}" \
+        "none"     "None — skip model download (configure after first boot)" \
         3>&1 1>&2 2>&3) || choice="${rec_model}"
 
     JARVIS_MODEL="${choice:-${rec_model}}"
@@ -700,7 +707,7 @@ uninstall_mode() {
 
     dialog --clear --backtitle "JARVIS OS Uninstaller" \
            --title "Remove JARVIS OS Components" \
-           --yesno "Remove JARVIS OS components from this system?\n\nThis will:\n  • Stop and disable jarvis, jarvis-setup, dmcp, ollama services\n  • Remove /usr/lib/jarvis, /var/lib/jarvis, /var/log/jarvis, /etc/jarvis\n  • Remove /usr/bin/jarvis, /usr/bin/jarvis-daemon, /usr/bin/dmcp, /usr/bin/dispatch\n  • Remove sudoers and polkit rules\n  • Remove systemd service units\n  • Remove SDDM config (if JarvisOS-managed)\n  • Remove XDG autostart entries\n\nDoes NOT remove: KDE Plasma, PipeWire, NetworkManager, linux-jarvisos kernel.\nTo remove linux-jarvisos: sudo pacman -R linux-jarvisos linux-jarvisos-headers\n\nProceed?" 28 70 \
+           --yesno "Remove JARVIS OS components from this system?\n\nThis will:\n  • Stop and disable jarvis, jarvis-setup, dmcp services\n  • Remove /usr/lib/jarvis, /var/lib/jarvis, /var/log/jarvis, /etc/jarvis\n  • Remove /usr/bin/jarvis, /usr/bin/jarvis-daemon, /usr/bin/dmcp, /usr/bin/dispatch\n  • Remove sudoers and polkit rules\n  • Remove systemd service units\n  • Remove SDDM config (if JarvisOS-managed)\n  • Remove XDG autostart entries\n\nDoes NOT remove: KDE Plasma, PipeWire, NetworkManager, linux-jarvisos kernel.\nTo remove linux-jarvisos: sudo pacman -R linux-jarvisos linux-jarvisos-headers\n\nProceed?" 28 70 \
         || { clear; echo "Aborted."; exit 0; }
 
     clear
@@ -708,8 +715,8 @@ uninstall_mode() {
     echo -e "${BOLD}${CYAN}  Removing JARVIS OS Components...${NC}"
     echo ""
 
-    systemctl stop  jarvis.service jarvis-setup.service dmcp.service ollama.service 2>/dev/null || true
-    systemctl disable jarvis.service jarvis-setup.service dmcp.service ollama.service 2>/dev/null || true
+    systemctl stop  jarvis.service jarvis-setup.service dmcp.service 2>/dev/null || true
+    systemctl disable jarvis.service jarvis-setup.service dmcp.service 2>/dev/null || true
 
     rm -rf /usr/lib/jarvis /var/lib/jarvis /var/log/jarvis /etc/jarvis
     rm -f /usr/bin/jarvis /usr/bin/jarvis-daemon /usr/bin/dmcp /usr/bin/dispatch
@@ -718,9 +725,8 @@ uninstall_mode() {
     rm -f /etc/polkit-1/rules.d/49-jarvis.rules
     rm -f /usr/lib/systemd/system/jarvis.service \
           /usr/lib/systemd/system/jarvis-setup.service \
-          /usr/lib/systemd/system/dmcp.service \
-          /usr/lib/systemd/system/ollama.service
-    rm -f /etc/xdg/autostart/jarvis.desktop /etc/xdg/autostart/ollama.desktop
+          /usr/lib/systemd/system/dmcp.service
+    rm -f /etc/xdg/autostart/jarvis.desktop
     rm -f /usr/share/applications/jarvis.desktop
     rm -f /etc/NetworkManager/conf.d/wifi-backend.conf 2>/dev/null || true
 
@@ -747,8 +753,8 @@ main() {
         OVERLAY_MODE="${1}"
         # Read model selection written by task-base-install.sh before chroot
         JARVIS_MODEL=$(cat /tmp/.jarvis-model-choice 2>/dev/null \
-            | tr -cd '[:alnum:]:.-' | head -c 64)
-        [ -z "${JARVIS_MODEL}" ] && JARVIS_MODEL="qwen3:4b"
+            | tr -cd '[:alnum:]:./_-' | head -c 128)
+        [ -z "${JARVIS_MODEL}" ] && JARVIS_MODEL="${JARVIS_DEFAULT_MODEL}"
 
         if [ "$(id -u)" -ne 0 ]; then
             echo "Root required — re-launching with sudo"
@@ -860,7 +866,7 @@ main() {
     echo -e "${GREEN}${BOLD}  ║         JARVIS OS Installation Complete!         ║${NC}"
     echo -e "${GREEN}${BOLD}  ╚══════════════════════════════════════════════════╝${NC}"
     echo ""
-    local _final_model="${JARVIS_MODEL:-qwen3:4b}"
+    local _final_model="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
     echo -e "  ${BOLD}Summary:${NC}"
     echo -e "    Disk:        ${TARGET_DISK}"
     echo -e "    Bootloader:  ${BOOT_LOADER}"
@@ -873,7 +879,7 @@ main() {
     echo -e "    AI Model:    ${_final_model}"
     echo ""
     if [ "${_final_model}" = "none" ]; then
-        echo -e "  ${CYAN}JARVIS AI:${NC} No model selected. Run 'ollama pull <model>' after boot."
+        echo -e "  ${CYAN}JARVIS AI:${NC} No model selected. Run 'jarvis model pull <user/repo[:quant]>' after boot."
     else
         echo -e "  ${CYAN}JARVIS AI:${NC} Model '${_final_model}' pulls on first boot (internet required)."
     fi

@@ -2,11 +2,11 @@
 """
 jarvis_agent.py — JarvisOS Autonomous Agent Runtime
 
-Voice (Vosk) + text input → Ollama planning → JARVIS policy gate → execution
+Voice (Vosk) + text input → local LLM planning → JARVIS policy gate → execution
 
-Launched by test-jarvis-ollama.sh which sets:
-  JARVIS_MODEL      — Ollama model name
-  OLLAMA_URL        — Ollama base URL (default http://localhost:11434)
+Launched by test-jarvis.sh which sets:
+  JARVIS_MODEL      — model name served by llama-server
+  LLM_URL           — llama-server base URL (default http://127.0.0.1:11445)
   VOSK_MODEL_PATH   — path to Vosk model dir (empty = voice disabled)
   JARVIS_LOG        — log file path (default /tmp/jarvis.log)
 """
@@ -43,7 +43,7 @@ except ImportError:
     pass
 
 # ── Config from environment ───────────────────────────────────────────────────
-OLLAMA_URL  = os.environ.get("OLLAMA_URL",        "http://localhost:11434")
+LLM_URL     = os.environ.get("LLM_URL",           "http://127.0.0.1:11445")
 MODEL       = os.environ.get("JARVIS_MODEL",       "")
 VOSK_PATH   = os.environ.get("VOSK_MODEL_PATH",    "")
 LOG_FILE    = os.environ.get("JARVIS_LOG",         "/tmp/jarvis.log")
@@ -136,7 +136,7 @@ def sysmon():
         "distro":     distro,
     }
 
-# ── Ollama planner ────────────────────────────────────────────────────────────
+# ── LLM planner ───────────────────────────────────────────────────────────────
 SYSTEM = """\
 You are JARVIS, the autonomous AI system manager for JarvisOS (Arch Linux).
 You have full system access. Respond to every request with ONLY valid JSON — no markdown fences, \
@@ -205,20 +205,23 @@ def plan(user_input, snap):
 
     try:
         r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
+            f"{LLM_URL}/v1/chat/completions",
             json={
-                "model":   MODEL,
-                "system":  SYSTEM,
-                "prompt":  prompt,
-                "stream":  False,
-                "options": {"temperature": 0.1},
+                "model":       MODEL,
+                "messages":    [
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user",   "content": prompt},
+                ],
+                "stream":      False,
+                "temperature": 0.1,
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=120,
         )
         r.raise_for_status()
-        raw = r.json().get("response", "")
+        raw = r.json()["choices"][0]["message"]["content"]
     except Exception as exc:
-        raw = f'{{"reasoning":"error: {exc}","commands":[],"summary":"Ollama unreachable"}}'
+        raw = f'{{"reasoning":"error: {exc}","commands":[],"summary":"LLM server unreachable"}}'
     finally:
         stop.set()
         spin.join()
@@ -250,12 +253,13 @@ def summarise(user_input, output):
     spin.start()
     try:
         r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={"model": MODEL, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.2}},
+            f"{LLM_URL}/v1/chat/completions",
+            json={"model": MODEL, "stream": False, "temperature": 0.2,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "chat_template_kwargs": {"enable_thinking": False}},
             timeout=60,
         )
-        return r.json().get("response", "(summary unavailable)")
+        return r.json()["choices"][0]["message"]["content"]
     except Exception:
         return "(summary unavailable)"
     finally:
@@ -749,7 +753,7 @@ def banner(snap, voice_active):
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     if not MODEL:
-        err("JARVIS_MODEL not set. Run via test-jarvis-ollama.sh")
+        err("JARVIS_MODEL not set. Run via test-jarvis.sh")
         sys.exit(1)
 
     snap = sysmon()

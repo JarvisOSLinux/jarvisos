@@ -124,8 +124,8 @@ jarvisos/
 │   ├── 06-squash-fs.sh           # Repack SquashFS
 │   ├── 07-rebuild-iso.sh         # Assemble final bootable ISO
 │   └── booter.sh                 # QEMU launcher for local testing
-├── jarvis_agent.py               # Standalone JARVIS agent runtime (voice + text → Ollama → shell)
-├── test-jarvis-ollama.sh         # Bootstrap launcher for the standalone agent
+├── jarvis_agent.py               # Standalone JARVIS agent runtime (voice + text → llama-server → shell)
+├── test-jarvis.sh                # Bootstrap launcher for the standalone agent
 ├── build-deps/                   # Place your CachyOS source ISO here
 └── build/                        # All build artifacts land here (gitignored)
 ```
@@ -142,7 +142,7 @@ jarvisos/
 │  🎤 Voice Input ──► Vosk STT ──► wake phrase "Hey JARVIS"          │
 │  ⌨️  Text Input  ─────────────────────────────────┐                 │
 │                                                   ▼                 │
-│                              Ollama (local LLM) ◄─── sysmon picks  │
+│                              llama.cpp (local LLM) ◄─ sysmon picks  │
 │                                   │                   model size    │
 │                                   ▼                                 │
 │                         Plan (JSON: commands + tiers)               │
@@ -271,33 +271,30 @@ The `packages/linux-jarvisos/PKGBUILD` applies these config symbols on top of th
 
 ## Running the JARVIS Agent (Standalone — No ISO needed)
 
-The `jarvis_agent.py` runtime works on any Linux system with Ollama installed. It does not require the custom kernel, but if `linux-jarvisos` is running it can read from `/sys/class/misc/jarvis/sysmon/` for hardware-aware model selection.
+The `jarvis_agent.py` runtime works on any Linux system; the launcher installs `llama-cpp` if needed. It does not require the custom kernel, but if `linux-jarvisos` is running it can read from `/sys/class/misc/jarvis/sysmon/` for hardware-aware model selection.
 
 ### Quick start
 
 ```bash
-# Ensure Ollama is running
-systemctl start ollama
-
 # Launch the agent (handles all setup automatically)
-./test-jarvis-ollama.sh
+./test-jarvis.sh
 ```
 
 The launcher will:
 1. Install system dependencies (`portaudio`, `python-pip`)
 2. Create a Python venv with `vosk`, `pyaudio`, `requests`
 3. Download the Vosk small English model (~45 MB) for offline STT
-4. Select an Ollama model based on available RAM
+4. Start `llama-server` with a model chosen by available RAM (downloaded on first run)
 5. Open a dedicated terminal window with the JARVIS agent
 
 ### Selecting a model
 
 ```bash
 # Force a specific model
-JARVIS_MODEL=qwen3:8b ./test-jarvis-ollama.sh
+JARVIS_MODEL=Qwen/Qwen3-8B-GGUF:Q4_K_M ./test-jarvis.sh
 
-# Point at a remote Ollama instance
-OLLAMA_URL=http://192.168.1.10:11434 ./test-jarvis-ollama.sh
+# Point at an already-running llama-server
+LLM_URL=http://192.168.1.10:11445 ./test-jarvis.sh
 ```
 
 ### Agent commands
@@ -329,8 +326,8 @@ If you are running JARVIS OS as your daily driver or a dev VM (not just booting 
 ### Prerequisites
 
 - JarvisOS installed from the live ISO (or kernel + daemon installed via `--host-install` + `--overlay`)
-- Ollama running (`systemctl status ollama`)
-- At least one model pulled: `ollama list`
+- `llama-server` installed (`pacman -S llama-cpp`)
+- At least one model pulled: `jarvis model list`
 
 ### 1 — Verify the kernel module loads at boot
 
@@ -365,27 +362,20 @@ cat /sys/class/misc/jarvis/sysmon/cpu_load    # Live CPU metric from kernel
 
 ### 2 — Configure the LLM model
 
-The JARVIS service and CLI both read `/etc/jarvis/jarvis.conf`. Edit it to set the model you have pulled:
+JARVIS runs the model itself: it starts `llama-server` on demand (port 11445) and stops it on shutdown. Providers live in `/etc/jarvis/providers.json`, managed with the CLI:
 
 ```bash
-ollama list                                   # Find installed models
-sudo nano /etc/jarvis/jarvis.conf
+jarvis model pull Qwen/Qwen3-8B-GGUF:Q4_K_M      # download a GGUF from Hugging Face
+jarvis model list
+jarvis providers add --type llamacpp --model Qwen/Qwen3-8B-GGUF:Q4_K_M
+jarvis providers add --type ollama-cloud --model gemma4:31b   # key from OLLAMA_API_KEY
 ```
 
-Key fields:
-
-```ini
-LLM_MODEL=qwen3:14b          # Match an ollama list entry exactly
-LLM_URL=http://localhost:11434
-OUTPUT_MODE=text              # Use "text" if no working audio device
-LLM_AUTO_PULL=false           # Set true to auto-pull missing models
-```
-
-Apply to the running service:
+Providers are tried in order and fail over. Set `OUTPUT_MODE=text` in `/usr/lib/jarvis/.env` if there is no working audio device. Apply changes with:
 
 ```bash
 sudo systemctl restart jarvis.service
-jarvis model                                  # Should echo the model name
+jarvis providers
 ```
 
 ### 3 — Run the TUI
@@ -438,8 +428,8 @@ ls /dev/jarvis && echo "kernel driver OK"
 # Daemon service
 systemctl is-active jarvis.service
 
-# Ollama reachable
-curl -s http://localhost:11434/api/tags | python3 -m json.tool | grep name
+# Model files pulled
+jarvis model list
 
 # Model configured
 jarvis model
@@ -576,7 +566,7 @@ Heavy lifting: installs KDE Plasma Wayland, PipeWire audio, NetworkManager (wpa_
 Builds the `linux-jarvisos` and `linux-jarvisos-headers` packages using `makepkg` on the host, then installs them into the rootfs via `pacman -U` in the chroot and regenerates the initramfs with the archiso/memdisk hooks. Backs up `vmlinuz-linux-jarvisos` and its initramfs to `build/kernel-files/` for step 7.
 
 #### `04-bake-jarvis.sh`
-Copies `Project-JARVIS` into the rootfs, creates the Python venv, installs Ollama, sets up the `jarvis.service` systemd unit, and places the CLI wrappers.
+Copies `Project-JARVIS` into the rootfs, creates the Python venv, installs llama.cpp, sets up the `jarvis.service` systemd unit, and places the CLI wrappers.
 
 #### `05-bake-calamares.sh`
 Installs Calamares and applies the JARVIS OS branding, partitioning, and post-install configuration.
@@ -597,7 +587,7 @@ Assembles the final ISO using `xorriso`. Dynamically sizes `efiboot.img` to fit 
 | `/dev/jarvis` driver | Working | Confirmed active when booted into linux-jarvisos |
 | sysmon sysfs (`/sys/class/misc/jarvis/sysmon/`) | Working | Readable with `cat` |
 | Policy sysfs (`/sys/class/misc/jarvis/policy/`) | Working | Shows all loaded rules |
-| Standalone JARVIS agent (`test-jarvis-ollama.sh`) | Working | Voice + text, Ollama, full policy enforcement |
+| Standalone JARVIS agent (`test-jarvis.sh`) | Working | Voice + text, llama.cpp, full policy enforcement |
 | ISO build pipeline | Working | Full build completes without errors |
 | Live boot (BIOS) | Working | Boots to KDE Plasma desktop |
 | Live boot (UEFI) | Working | efiboot.img dynamically sized; EFI stub enforced |
@@ -657,11 +647,11 @@ The `07-rebuild-iso.sh` script dynamically sizes efiboot.img and enforces `CONFI
 
 ### JARVIS agent
 
-**`Ollama not reachable`**
+**`LLM server unreachable`**
 ```bash
-systemctl start ollama
-# or for user session:
-ollama serve &
+ls /var/log/jarvis/llama-server.log   # llama-server's own log
+pacman -Q llama-cpp                   # installed?
+jarvis model list                     # model downloaded?
 ```
 
 **No voice input (`vosk/pyaudio` missing)**

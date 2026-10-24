@@ -3,7 +3,7 @@
 # Extracted from install_packages_mode() in jarvis-install.sh.
 #
 # Required env vars:
-#   JARVIS_MODEL  — e.g. "qwen3:4b" or "none"
+#   JARVIS_MODEL  — Hugging Face GGUF ref (user/repo[:quant]) or "none"
 #   OVERLAY_MODE  — "--overlay" or "--install-packages"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,7 @@ source "${SCRIPT_DIR}/lib.sh"
 need_root
 detect_arch_based
 
-JARVIS_MODEL="${JARVIS_MODEL:-qwen3:4b}"
+JARVIS_MODEL="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
 OVERLAY_MODE="${OVERLAY_MODE:---overlay}"
 
 trap 'echo "JARVIS overlay failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -288,75 +288,9 @@ LOGO=distributor-logo-jarvisos
 EOF
 ok "JARVIS OS branding applied"
 
-# ── Ollama (GPU-aware install) ────────────────────────────────────────────
-info "Installing Ollama..."
-_install_ollama_gpu() {
-    local gpu; gpu=$(detect_gpu_vendor)
-    info "GPU detected: ${gpu} — selecting Ollama variant"
-    case "${gpu}" in
-        nvidia)
-            info "Installing ollama-cuda + NVIDIA drivers + CUDA..."
-            pacman -S --noconfirm --needed \
-                ollama-cuda nvidia-dkms nvidia-utils dkms cuda \
-                || warn "Some NVIDIA/CUDA packages failed"
-            ok "Ollama installed with NVIDIA CUDA support"
-            ;;
-        amd)
-            info "Installing ollama-rocm + ROCm runtime..."
-            pacman -S --noconfirm --needed \
-                ollama-rocm rocm-hip-runtime rocm-opencl-runtime rocm-device-libs \
-                || warn "Some ROCm packages failed"
-            getent group render >/dev/null 2>&1 && usermod -aG render ollama 2>/dev/null || true
-            usermod -aG video ollama 2>/dev/null || true
-            ok "Ollama installed with AMD ROCm support"
-            ;;
-        intel-arc)
-            info "Installing ollama-vulkan + Intel Arc compute runtime..."
-            pacman -S --noconfirm --needed \
-                ollama-vulkan vulkan-intel intel-compute-runtime \
-                level-zero-loader intel-media-driver \
-                || warn "Some Intel Arc packages failed"
-            ok "Ollama installed with Intel Arc Vulkan support"
-            ;;
-        cpu|*)
-            info "No dedicated GPU — installing ollama (CPU mode)..."
-            pacman -S --noconfirm --needed ollama || warn "ollama install failed"
-            ok "Ollama installed (CPU mode)"
-            ;;
-    esac
-}
-
-if command -v ollama >/dev/null 2>&1; then
-    ok "Ollama already installed ($(ollama --version 2>/dev/null || echo unknown))"
-else
-    _install_ollama_gpu
-fi
-
-if [ ! -f /usr/lib/systemd/system/ollama.service ]; then
-    local _ollama_bin; _ollama_bin=$(command -v ollama 2>/dev/null || echo "/usr/bin/ollama")
-    cat > /usr/lib/systemd/system/ollama.service << OLLAMAEOF
-[Unit]
-Description=Ollama Service
-After=network-online.target
-
-[Service]
-ExecStart=${_ollama_bin} serve
-User=ollama
-Group=ollama
-Restart=always
-RestartSec=3
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="HOME=/usr/share/ollama"
-Environment="OLLAMA_HOST=127.0.0.1"
-
-[Install]
-WantedBy=default.target
-OLLAMAEOF
-fi
-getent group  ollama >/dev/null 2>&1 || groupadd -r ollama
-getent passwd ollama >/dev/null 2>&1 || \
-    useradd -r -g ollama -d /usr/share/ollama -s /bin/false -c 'Ollama Service' ollama
-mkdir -p /usr/share/ollama && chown -R ollama:ollama /usr/share/ollama
+# ── llama.cpp runner (GPU-aware install) ──────────────────────────────────
+info "Installing llama.cpp (llama-server)..."
+install_llama_cpp_arch
 
 # ── JARVIS user + directories ─────────────────────────────────────────────
 info "Setting up JARVIS user and directories..."
@@ -364,7 +298,7 @@ getent group  jarvis >/dev/null 2>&1 || groupadd -r jarvis
 getent passwd jarvis >/dev/null 2>&1 || \
     useradd -r -g jarvis -d /var/lib/jarvis -s /sbin/nologin \
             -c 'JARVIS AI Assistant' jarvis
-for grp in audio video network systemd-journal storage optical; do
+for grp in audio video render network systemd-journal storage optical; do
     getent group "${grp}" >/dev/null 2>&1 && \
         usermod -aG "${grp}" jarvis 2>/dev/null || true
 done
@@ -454,14 +388,9 @@ if [ -f /usr/lib/jarvis/.env ]; then
             && sed -i "s|^${k}=.*|${k}=${v}|" "${f}" \
             || echo "${k}=${v}" >> "${f}"
     }
-    local _inst_model
-    _inst_model=$(cat /tmp/.jarvis-model-choice 2>/dev/null \
-        | tr -cd '[:alnum:]:.-' | head -c 64)
-    [ -z "${_inst_model}" ] && _inst_model="${JARVIS_MODEL:-qwen3:4b}"
-    local _auto_pull="true"
-    [ "${_inst_model}" = "none" ] && { _inst_model="qwen3:4b"; _auto_pull="false"; }
-    _set_env LLM_AUTO_PULL     "${_auto_pull}"
-    _set_env LLM_MODEL         "${_inst_model}"
+    _inst_model=$(cat /tmp/.jarvis-model-choice 2>/dev/null | sanitize_model)
+    [ -z "${_inst_model}" ] && _inst_model="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
+    write_jarvis_providers "${_inst_model}"
     _set_env VOSK_MODEL_PATH   /var/lib/jarvis/models/vosk/vosk-model-small-en-us-0.15
     _set_env TTS_MODEL_ONNX    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx
     _set_env TTS_MODEL_JSON    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx.json
@@ -549,14 +478,14 @@ info "Installing systemd service units..."
 cat > /usr/lib/systemd/system/jarvis.service << 'JARVISSVC'
 [Unit]
 Description=JARVIS AI Voice Assistant
-After=network.target sound.target ollama.service
-Wants=network.target ollama.service
+After=network.target sound.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=jarvis
 Group=jarvis
-SupplementaryGroups=audio video network systemd-journal storage
+SupplementaryGroups=audio video render network systemd-journal storage
 WorkingDirectory=/usr/lib/jarvis
 RuntimeDirectory=jarvis
 RuntimeDirectoryMode=0775
@@ -582,7 +511,6 @@ Environment=JARVIS_OUTPUT_SOCKET=/run/jarvis/output.sock
 Environment=JARVIS_LOG_DIR=/var/log/jarvis
 Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
 Environment=PYTHONPATH=/usr/lib
-Environment=OLLAMA_HOST=127.0.0.1:11434
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=jarvis
@@ -591,62 +519,11 @@ SyslogIdentifier=jarvis
 WantedBy=multi-user.target
 JARVISSVC
 
-cat > /usr/lib/systemd/system/jarvis-setup.service << 'SETUPSVC'
-[Unit]
-Description=JARVIS First-Boot Setup (pull LLM model)
-After=network-online.target ollama.service
-Wants=network-online.target ollama.service
-ConditionPathExists=!/var/lib/jarvis/.setup-done
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/jarvis-first-boot.sh
-RemainAfterExit=yes
-TimeoutStartSec=600
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-SETUPSVC
-
-cat > /usr/local/bin/jarvis-first-boot.sh << 'FIRSTBOOT'
-#!/bin/bash
-MARKER="/var/lib/jarvis/.setup-done"
-LOG="/var/log/jarvis/first-boot.log"
-mkdir -p /var/log/jarvis
-exec > >(tee -a "$LOG") 2>&1
-echo "=== JARVIS first-boot $(date) ==="
-[ -f "$MARKER" ] && echo "Already done." && exit 0
-MODEL="qwen3:4b"
-AUTO_PULL="true"
-if [ -f /usr/lib/jarvis/.env ]; then
-    _m=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
-    [ -n "$_m" ] && MODEL="$_m"
-    _ap=$(grep -E '^LLM_AUTO_PULL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
-    [ -n "$_ap" ] && AUTO_PULL="$_ap"
-fi
-if [ "${AUTO_PULL}" = "false" ]; then
-    echo "Auto-pull disabled — skipping model download."
-    touch "$MARKER"
-    systemctl disable jarvis-setup.service 2>/dev/null || true
-    exit 0
-fi
-echo "Waiting for Ollama..."
-for i in $(seq 1 60); do
-    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 2
-done
-ollama list 2>/dev/null | grep -q "${MODEL%%:*}" || ollama pull "$MODEL" || exit 1
-touch "$MARKER"
-systemctl disable jarvis-setup.service 2>/dev/null || true
-echo "First-boot complete."
-FIRSTBOOT
-chmod 755 /usr/local/bin/jarvis-first-boot.sh
+install_jarvis_first_boot
 
 cat > /usr/local/bin/jarvis-welcome.sh << 'WELCOMEEOF'
 #!/bin/bash
 MARKER="${HOME}/.config/jarvis-welcome-done"
-ENV_FILE="/usr/lib/jarvis/.env"
 BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 RED='\033[0;31m'; NC='\033[0m'
 [ -f "$MARKER" ] && exit 0
@@ -657,28 +534,26 @@ echo -e "${BOLD}${CYAN}  ║              Welcome to JARVIS OS                  
 echo -e "${BOLD}${CYAN}  ║           AI-Native Linux Distribution             ║${NC}"
 echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  Checking Ollama AI engine..."
-for i in $(seq 1 30); do
-    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 2
-done
-OLLAMA_OK=false
-curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && OLLAMA_OK=true
-if $OLLAMA_OK; then
-    echo -e "  ${GREEN}✓ Ollama ready${NC}"
+JENV="JARVIS_CONFIG_DIR=/etc/jarvis JARVIS_DATA_DIR=/var/lib/jarvis JARVIS_MODELS_DIR=/var/lib/jarvis/models"
+jarvis_as_service() { sudo -u jarvis env ${JENV} /usr/bin/jarvis "$@"; }
+echo -e "  Checking local AI engine..."
+if command -v llama-server >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓ llama-server found${NC}"
 else
-    echo -e "  ${YELLOW}⚠ Ollama not responding — services may still be starting.${NC}"
-    echo -e "    Check: sudo systemctl status ollama"
+    echo -e "  ${YELLOW}⚠ llama-server missing — install it: sudo pacman -S llama-cpp${NC}"
 fi
 echo ""
-CURRENT_MODEL="qwen3:4b"
-if [ -f "$ENV_FILE" ]; then
-    _m=$(grep -E '^LLM_MODEL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
-    [ -n "$_m" ] && CURRENT_MODEL="$_m"
-fi
+CURRENT_MODEL=$(python3 -c 'import json
+p = json.load(open("/etc/jarvis/providers.json"))["providers"]
+print(next((x["model"] for x in p if x.get("type") == "llamacpp"), ""))' 2>/dev/null)
+[ -z "${CURRENT_MODEL}" ] && CURRENT_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
+model_pulled() {
+    local repo="${1%%:*}" quant="Q4_K_M"
+    [[ "$1" == *:* ]] && quant="${1#*:}"
+    jarvis_as_service model list 2>/dev/null | grep -i "${repo}/" | grep -qi "${quant}"
+}
 MODEL_READY=false
-if $OLLAMA_OK && ollama list 2>/dev/null | grep -q "${CURRENT_MODEL%%:*}"; then
-    MODEL_READY=true
-fi
+model_pulled "${CURRENT_MODEL}" && MODEL_READY=true
 if $MODEL_READY; then
     echo -e "  ${GREEN}✓ AI model ready: ${CURRENT_MODEL}${NC}"
 else
@@ -690,56 +565,50 @@ MODEL_CHOICE="keep"
 if command -v dialog >/dev/null 2>&1; then
     MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
         --title "AI Model Selection" \
-        --menu "Select AI model (current: ${CURRENT_MODEL}):" 20 72 7 \
-        "keep"          "Keep current: ${CURRENT_MODEL}" \
-        "qwen3:4b"      "Qwen3 4B     — recommended  (~2.6 GB)" \
-        "qwen3:8b"      "Qwen3 8B     — better quality (~5.2 GB)" \
-        "llama3.2:3b"   "Llama 3.2 3B — lightweight  (~2.0 GB)" \
-        "llama3.1:8b"   "Llama 3.1 8B — high quality (~4.9 GB)" \
-        "gemma3:4b"     "Gemma 3 4B   — Google model (~3.3 GB)" \
-        "custom"        "Enter custom model name" \
+        --menu "Select AI model (current: ${CURRENT_MODEL}):" 20 78 7 \
+        "keep"                                         "Keep current: ${CURRENT_MODEL}" \
+        "Qwen/Qwen3-4B-GGUF:Q4_K_M"                    "Qwen3 4B     — recommended  (~2.6 GB)" \
+        "Qwen/Qwen3-8B-GGUF:Q4_K_M"                    "Qwen3 8B     — better quality (~5.2 GB)" \
+        "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"  "Llama 3.2 3B — lightweight  (~2.0 GB)" \
+        "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M" "Llama 3.1 8B — high quality (~4.9 GB)" \
+        "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"           "Gemma 3 4B   — Google model (~3.3 GB)" \
+        "custom"                                       "Enter a Hugging Face GGUF reference" \
         3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
     if [ "${MODEL_CHOICE:-}" = "custom" ]; then
         MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
             --title "Custom Model" \
-            --inputbox "Enter Ollama model name (e.g. mistral:7b, phi3:mini):" \
-            8 60 "${CURRENT_MODEL}" \
+            --inputbox "Enter user/repo[:quant] (e.g. unsloth/gemma-3-4b-it-GGUF:Q4_K_M):" \
+            8 70 "${CURRENT_MODEL}" \
             3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
     fi
     clear
 fi
 [ -z "${MODEL_CHOICE:-}" ] && MODEL_CHOICE="keep"
+MODEL_CHOICE=$(printf '%s' "${MODEL_CHOICE}" | tr -cd '[:alnum:]:./_-')
 if [ "${MODEL_CHOICE}" != "keep" ] && [ -n "${MODEL_CHOICE}" ] \
         && [ "${MODEL_CHOICE}" != "${CURRENT_MODEL}" ]; then
     echo -e "  Switching model to: ${MODEL_CHOICE}"
-    if [ -f "$ENV_FILE" ]; then
-        if [ -w "$ENV_FILE" ]; then
-            grep -q "^LLM_MODEL=" "$ENV_FILE" \
-                && sed -i "s|^LLM_MODEL=.*|LLM_MODEL=${MODEL_CHOICE}|" "$ENV_FILE" \
-                || echo "LLM_MODEL=${MODEL_CHOICE}" >> "$ENV_FILE"
-        else
-            grep -q "^LLM_MODEL=" "$ENV_FILE" \
-                && sudo sed -i "s|^LLM_MODEL=.*|LLM_MODEL=${MODEL_CHOICE}|" "$ENV_FILE" \
-                || echo "LLM_MODEL=${MODEL_CHOICE}" | sudo tee -a "$ENV_FILE" >/dev/null
-        fi
+    if [ -f /etc/jarvis/providers.json ]; then
+        jarvis_as_service providers edit local --model "${MODEL_CHOICE}" || true
+    else
+        jarvis_as_service providers add --type llamacpp --name local --model "${MODEL_CHOICE}" || true
     fi
     CURRENT_MODEL="${MODEL_CHOICE}"
     MODEL_READY=false
+    model_pulled "${CURRENT_MODEL}" && MODEL_READY=true
 fi
-if ! $MODEL_READY && $OLLAMA_OK; then
+if ! $MODEL_READY; then
     echo ""
     echo -e "  Pulling AI model: ${BOLD}${CURRENT_MODEL}${NC}"
     echo -e "  This may take several minutes depending on your connection..."
     echo ""
-    if ollama pull "${CURRENT_MODEL}"; then
+    if jarvis_as_service model pull "${CURRENT_MODEL}"; then
         echo ""
         echo -e "  ${GREEN}✓ Model downloaded: ${CURRENT_MODEL}${NC}"
         MODEL_READY=true
-        sudo systemctl disable jarvis-setup.service 2>/dev/null || true
-        sudo touch /var/lib/jarvis/.setup-done 2>/dev/null || true
     else
         echo -e "  ${RED}✗ Model pull failed.${NC}"
-        echo -e "    Try manually: ollama pull ${CURRENT_MODEL}"
+        echo -e "    Try manually: jarvis model pull ${CURRENT_MODEL}"
         echo ""
         echo -e "  Press Enter to continue..."
         read -r
@@ -754,7 +623,7 @@ echo -e "${BOLD}${CYAN}  ║                 JARVIS OS Ready!                   
 echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${BOLD}AI Model:${NC}   ${CURRENT_MODEL}"
-echo -e "  ${BOLD}Engine:${NC}     Ollama (localhost:11434)"
+echo -e "  ${BOLD}Engine:${NC}     llama.cpp (managed by JARVIS)"
 echo -e "  ${BOLD}Kernel:${NC}     $(uname -r)"
 echo ""
 echo -e "  ${BOLD}How to use JARVIS:${NC}"
@@ -812,15 +681,6 @@ fi
 
 # ── XDG autostart + desktop launcher ─────────────────────────────────────
 mkdir -p /etc/xdg/autostart /usr/share/applications
-cat > /etc/xdg/autostart/ollama.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=Ollama Service
-Exec=/usr/local/bin/ollama serve
-Terminal=false
-StartupNotify=false
-NoDisplay=true
-EOF
 cat > /etc/xdg/autostart/jarvis.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
@@ -873,7 +733,6 @@ systemctl enable systemd-resolved.service            2>/dev/null || true
 systemctl enable sddm.service                        2>/dev/null || true
 systemctl enable bluetooth.service                   2>/dev/null || true
 systemctl enable rtkit-daemon.service                2>/dev/null || true
-systemctl enable ollama.service                      2>/dev/null || true
 systemctl enable jarvis.service                      2>/dev/null || true
 systemctl enable jarvis-setup.service                2>/dev/null || true
 systemctl disable iwd.service                        2>/dev/null || true

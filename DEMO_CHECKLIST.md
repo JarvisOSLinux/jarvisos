@@ -6,7 +6,7 @@ Quick stand demos. Each block is ~1–2 min. Pick by audience depth.
 
 ## 0. Setup (before anyone arrives)
 
-- [ ] JARVIS TUI running: `cd ~/jarvisos/Project-JARVIS && jarvis` (or `./test-jarvis-ollama.sh` for standalone agent)
+- [ ] JARVIS TUI running: `cd ~/jarvisos/Project-JARVIS && jarvis` (or `./test-jarvis.sh` for standalone agent)
 - [ ] `/dev/jarvis` present: `ls /dev/jarvis`
 - [ ] Sysmon sysfs readable: `cat /sys/class/misc/jarvis/sysmon/cpu_load`
 - [ ] KWallet unlocked (so ksshaskpass doesn't fail first try)
@@ -196,7 +196,7 @@ Drivers (`linux-jarvisos/drivers/jarvis/`):
 ```
 User prompt
     ↓
-LLM (Ollama, runs locally — no cloud)
+LLM (llama.cpp, runs locally — no cloud)
     ↓
 dispatch (Rust) — intent routing
     ↓
@@ -210,7 +210,7 @@ linux-jarvisos kernel (/dev/jarvis)
 ```
 
 Key talking points:
-- **Fully local** — Ollama runs on-device, no API keys, no internet required
+- **Fully local** — llama.cpp runs on-device, no API keys, no internet required
 - **Kernel-native** — AI reads hardware state and enforces policy at the kernel level
 - **Open MCP ecosystem** — any MCP server can plug in; dmcp manages them
 - **Security research** — 7-threat taxonomy discovered during live operation (see README)
@@ -253,7 +253,7 @@ All → `SAFE` tier → instant, no confirmation.
 
 | Problem | Fix |
 |---------|-----|
-| Ollama not responding | `systemctl --user start ollama` or `ollama serve &` |
+| LLM not responding | `jarvis model list`; check `/var/log/jarvis/llama-server.log` and that `llama-server` is installed (`pacman -S llama-cpp`) |
 | `/dev/jarvis` missing | Running stock kernel — boot into jarvisos kernel |
 | ksshaskpass not found | `sudo pacman -S ksshaskpass` |
 | dmcp not found | `/usr/local/bin/dmcp` — check PATH |
