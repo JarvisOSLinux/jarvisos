@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Called by 49-jarvis-unlock.rules (as the unprivileged polkitd user) through
+# polkit.spawn. Exit 0 only when the root-owned unlock window written by
+# `sudo jarvis-unlock` is still open for the user named in $1.
+#
+# The state-file path comes from $2 for tests only; the rule never passes it
+# and no user process can add arguments to polkit's own call.
+set -u
+
+user="${1:-}"
+file="${2:-/run/jarvis/unlock}"
+
+[[ -n "$user" ]] || exit 1
+[[ -f "$file" && ! -L "$file" ]] || exit 1
+
+# Owned by root and not writable by group or others, or it was not written by jarvis-unlock.
+[[ "$(stat -c '%u' "$file")" == "0" ]] || exit 1
+perm="$(stat -c '%a' "$file")"
+(( (8#$perm & 8#022) == 0 )) || exit 1
+
+read -r expiry owner <"$file" || exit 1
+[[ "$expiry" =~ ^[0-9]+$ ]] || exit 1
+[[ "$owner" == "$user" ]] || exit 1
+(( expiry > $(date +%s) )) || exit 1
+exit 0

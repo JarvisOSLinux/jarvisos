@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# jarvis-unlock — let root MCP tools run without the polkit password prompt
+# for a limited time (JarvisOSLinux/Project-JARVIS#310, idea 3).
+#
+#   sudo jarvis-unlock 4h      unlock for 4 hours (s, m, h or d; bare number = minutes)
+#   sudo jarvis-unlock --off   lock again now
+#   jarvis-unlock --status     show whether it is unlocked
+#
+# Only root can write the state file, so JARVIS, an MCP server or any other
+# program running as the user can neither start nor extend the window. The
+# polkit rule (49-jarvis-unlock.rules) asks jarvis-unlock-check, which honours
+# the window only for the user who ran this command and only for the dmcp
+# system-server action. /run is cleared on reboot, which ends the window.
+set -euo pipefail
+
+STATE_DIR="/run/jarvis"
+STATE_FILE="$STATE_DIR/unlock"
+MAX_SECONDS=$((12 * 3600))
+
+usage() {
+    echo "usage: sudo jarvis-unlock <duration>|--off    (duration: 30m, 4h, 1d; max 12h)" >&2
+    echo "       jarvis-unlock --status" >&2
+    exit 2
+}
+
+to_seconds() {
+    local v="$1" n unit
+    [[ "$v" =~ ^([0-9]+)([smhd]?)$ ]] || return 1
+    n="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]:-m}"
+    case "$unit" in
+        s) echo "$n" ;;
+        m) echo $((n * 60)) ;;
+        h) echo $((n * 3600)) ;;
+        d) echo $((n * 86400)) ;;
+    esac
+}
+
+status() {
+    if [[ -f "$STATE_FILE" && ! -L "$STATE_FILE" ]]; then
+        local expiry user now
+        read -r expiry user <"$STATE_FILE" || true
+        now=$(date +%s)
+        if [[ "$expiry" =~ ^[0-9]+$ ]] && (( expiry > now )); then
+            echo "unlocked for $user until $(date -d "@$expiry" '+%F %T') ($(( (expiry - now) / 60 )) min left)"
+            return 0
+        fi
+    fi
+    echo "locked"
+}
+
+[[ $# -eq 1 ]] || usage
+
+if [[ "$1" == "--status" ]]; then
+    status
+    exit 0
+fi
+
+if [[ $EUID -ne 0 ]]; then
+    echo "error: run with sudo (an unlock the user could start alone would be no gate at all)" >&2
+    exit 1
+fi
+
+if [[ "$1" == "--off" ]]; then
+    rm -f "$STATE_FILE"
+    echo "locked"
+    exit 0
+fi
+
+owner="${SUDO_USER:-}"
+if [[ -z "$owner" || "$owner" == "root" ]]; then
+    echo "error: run it as 'sudo jarvis-unlock' from your own account, not from a root shell" >&2
+    exit 1
+fi
+
+seconds=$(to_seconds "$1") || usage
+if (( seconds < 1 )); then
+    usage
+fi
+if (( seconds > MAX_SECONDS )); then
+    echo "error: at most 12h; run it again when it runs out" >&2
+    exit 1
+fi
+
+install -d -m 0755 -o root -g root "$STATE_DIR"
+expiry=$(( $(date +%s) + seconds ))
+tmp="$(mktemp "$STATE_DIR/.unlock.XXXXXX")"
+printf '%s %s\n' "$expiry" "$owner" >"$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$STATE_FILE"
+status
