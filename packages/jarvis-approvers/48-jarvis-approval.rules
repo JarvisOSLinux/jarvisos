@@ -1,0 +1,26 @@
+// Root MCP calls approved by an enrolled phone's passkey
+// (JarvisOSLinux/Project-JARVIS#310, idea 4).
+//
+// The phone signs the exact command (server, tool, arguments) and an expiry.
+// jarvis-approval-check verifies that signature against the keys enrolled
+// under /etc/jarvis/approvers. Anything that does not check out falls back to
+// the usual password dialog: this rule can only say yes, never no.
+
+polkit.addRule(function (action, subject) {
+    if (action.id != "org.jarvisos.dmcp.run-system-server") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (!subject.active || !subject.local) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.lookup("program") != "/usr/bin/dmcp") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    try {
+        polkit.spawn(["/usr/lib/jarvis/jarvis-approval-check",
+                      action.lookup("command_line")]);
+        return polkit.Result.YES;
+    } catch (e) {
+        return polkit.Result.NOT_HANDLED;
+    }
+});

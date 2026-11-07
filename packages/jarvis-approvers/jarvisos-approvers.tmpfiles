@@ -1,0 +1,3 @@
+d /var/lib/jarvis-approvals 0700 polkitd polkitd -
+d /etc/jarvis/approvers 0755 root root -
+d /etc/jarvis/approvers/keys 0755 root root -

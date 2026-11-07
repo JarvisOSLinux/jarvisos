@@ -1,0 +1,26 @@
+# Maintainer: JarvisOS Team <https://github.com/JarvisOSLinux>
+pkgname=jarvisos-approvers
+pkgver=20261106
+pkgrel=1
+pkgdesc='Let an enrolled phone passkey approve root MCP commands without a password prompt'
+arch=(any)
+url='https://github.com/JarvisOSLinux/jarvisos'
+license=(GPL-3.0-only)
+depends=(polkit python python-cryptography dmcp)
+source=(
+    jarvis_approval.py
+    jarvis-approval-check
+    jarvis-approvers
+    48-jarvis-approval.rules
+    jarvisos-approvers.tmpfiles
+)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP)
+
+package() {
+    install -Dm644 jarvis_approval.py "$pkgdir/usr/lib/jarvis/jarvis_approval.py"
+    install -Dm755 jarvis-approval-check "$pkgdir/usr/lib/jarvis/jarvis-approval-check"
+    install -Dm755 jarvis-approvers "$pkgdir/usr/bin/jarvis-approvers"
+    install -Dm644 48-jarvis-approval.rules \
+        "$pkgdir/usr/share/polkit-1/rules.d/48-jarvis-approval.rules"
+    install -Dm644 jarvisos-approvers.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/jarvisos-approvers.conf"
+}
