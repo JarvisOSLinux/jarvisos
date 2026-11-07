@@ -1,0 +1,22 @@
+# Maintainer: JarvisOS Team <https://github.com/JarvisOSLinux>
+pkgname=jarvisos-polkit
+pkgver=20261106
+pkgrel=1
+pkgdesc='JarvisOS polkit pieces: jarvis-unlock, a timed passwordless window for root MCP calls'
+arch=(any)
+url='https://github.com/JarvisOSLinux/jarvisos'
+license=(GPL-3.0-only)
+depends=(polkit bash dmcp)
+source=(
+    jarvis-unlock
+    jarvis-unlock-check
+    49-jarvis-unlock.rules
+)
+sha256sums=(SKIP SKIP SKIP)
+
+package() {
+    install -Dm755 jarvis-unlock "$pkgdir/usr/bin/jarvis-unlock"
+    install -Dm755 jarvis-unlock-check "$pkgdir/usr/lib/jarvis/jarvis-unlock-check"
+    install -Dm644 49-jarvis-unlock.rules \
+        "$pkgdir/usr/share/polkit-1/rules.d/49-jarvis-unlock.rules"
+}
