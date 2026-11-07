@@ -715,7 +715,7 @@ uninstall_mode() {
     rm -f /usr/bin/jarvis /usr/bin/jarvis-daemon /usr/bin/dmcp /usr/bin/dispatch
     rm -f /usr/local/bin/jarvis-first-boot.sh /usr/local/bin/mount-bootmnt.sh
     rm -f /etc/sudoers.d/10-jarvis
-    rm -f /etc/polkit-1/rules.d/49-jarvis.rules
+    rm -f /etc/polkit-1/rules.d/49-jarvis.rules /usr/share/polkit-1/rules.d/49-jarvis-unlock.rules /usr/bin/jarvis-unlock
     rm -f /usr/lib/systemd/system/jarvis.service \
           /usr/lib/systemd/system/jarvis-setup.service \
           /usr/lib/systemd/system/dmcp.service \

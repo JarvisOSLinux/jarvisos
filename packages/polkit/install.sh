@@ -15,6 +15,11 @@ fi
 install -Dm644 "$SCRIPT_DIR/org.jarvisos.jarvis.rules"   "$RULES_DIR/org.jarvisos.jarvis.rules"
 install -Dm644 "$SCRIPT_DIR/jarvis-actions.conf"         "$ACTIONS_DIR/org.jarvisos.jarvis.policy"
 
+# Timed unlock for root MCP tools (Project-JARVIS#310): `sudo jarvis-unlock 4h`
+install -Dm644 "$SCRIPT_DIR/49-jarvis-unlock.rules"      "$RULES_DIR/49-jarvis-unlock.rules"
+install -Dm755 "$SCRIPT_DIR/jarvis-unlock-check"         /usr/lib/jarvis/jarvis-unlock-check
+install -Dm755 "$SCRIPT_DIR/jarvis-unlock"               /usr/bin/jarvis-unlock
+
 # Reload polkit to pick up new rules
 if command -v pkaction &>/dev/null; then
     pkill -HUP polkitd 2>/dev/null || true

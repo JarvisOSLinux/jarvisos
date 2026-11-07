@@ -1,0 +1,29 @@
+// Passwordless dmcp system-server calls while `sudo jarvis-unlock` is open
+// (JarvisOSLinux/Project-JARVIS#310, idea 3).
+//
+// Everything else still asks for the password: any other action, an
+// inactive or remote session, any program other than the root-owned
+// /usr/bin/dmcp (a copy the user can replace, such as ~/.cargo/bin/dmcp,
+// matches the generic exec action instead and never gets here), and any
+// moment outside the window.
+//
+// The window is written by root only (jarvis-unlock), so nothing running
+// as the user can open or extend it.
+
+polkit.addRule(function (action, subject) {
+    if (action.id != "org.jarvisos.dmcp.run-system-server") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (!subject.active || !subject.local) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.lookup("program") != "/usr/bin/dmcp") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    try {
+        polkit.spawn(["/usr/lib/jarvis/jarvis-unlock-check", subject.user]);
+        return polkit.Result.YES;
+    } catch (e) {
+        return polkit.Result.NOT_HANDLED;
+    }
+});
