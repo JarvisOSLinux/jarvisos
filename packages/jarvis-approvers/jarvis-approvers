@@ -1,0 +1,84 @@
+#!/usr/bin/python3
+"""Manage the phones allowed to approve root MCP commands (Project-JARVIS#310).
+
+  sudo jarvis-approvers init --rp-id HOST.TAILNET.ts.net
+  sudo jarvis-approvers add NAME PUBLIC_KEY.pem
+  jarvis-approvers list
+  sudo jarvis-approvers remove NAME
+
+Only root can write /etc/jarvis/approvers, so JARVIS cannot enroll a key of its
+own. Until a key is enrolled, every root call asks for the password as before.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/usr/lib/jarvis")
+
+from cryptography.hazmat.primitives import serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+
+import jarvis_approval as ja  # noqa: E402
+
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def need_root() -> None:
+    if os.geteuid() != 0:
+        sys.exit("error: run with sudo")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="jarvis-approvers")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    init = sub.add_parser("init")
+    init.add_argument("--rp-id", required=True)
+    init.add_argument("--origin")
+    add = sub.add_parser("add")
+    add.add_argument("name")
+    add.add_argument("pem")
+    sub.add_parser("list")
+    rm = sub.add_parser("remove")
+    rm.add_argument("name")
+    args = parser.parse_args()
+    root = ja.CONFIG_DIR
+
+    if args.cmd == "list":
+        keys = ja.load_keys(root)
+        print("\n".join(sorted(keys)) or "no approvers enrolled")
+        return
+
+    need_root()
+    if args.cmd == "init":
+        origin = args.origin or f"https://{args.rp_id}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "keys").mkdir(exist_ok=True)
+        (root / "config.json").write_text(
+            json.dumps({"rp_id": args.rp_id, "origin": origin}, indent=2) + "\n"
+        )
+        print(f"configured for {origin}")
+    elif args.cmd == "add":
+        if not NAME.match(args.name):
+            sys.exit("error: name must be letters, digits, . _ -")
+        key = serialization.load_pem_public_key(Path(args.pem).read_bytes())
+        if not isinstance(key, ec.EllipticCurvePublicKey) or key.curve.name != "secp256r1":
+            sys.exit("error: need a P-256 (ES256) public key")
+        pem = key.public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode()
+        (root / "keys").mkdir(parents=True, exist_ok=True)
+        (root / "keys" / f"{args.name}.json").write_text(
+            json.dumps({"name": args.name, "public_key_pem": pem}, indent=2) + "\n"
+        )
+        print(f"enrolled {args.name}")
+    elif args.cmd == "remove":
+        if not NAME.match(args.name):
+            sys.exit("error: bad name")
+        (root / "keys" / f"{args.name}.json").unlink(missing_ok=True)
+        print(f"removed {args.name}")
+
+
+main()

@@ -58,6 +58,7 @@ declare -A PKG_DIRS=(
     [jarvisos-mirrorlist]="${PROJECT_ROOT}/packages/jarvisos-mirrorlist"
     [jarvisos-keyring]="${PROJECT_ROOT}/packages/jarvisos-keyring"
     [jarvisos-polkit]="${PROJECT_ROOT}/packages/polkit"
+    [jarvisos-approvers]="${PROJECT_ROOT}/packages/jarvis-approvers"
     [dmcp]="${PROJECT_ROOT}/dmcp"
     [dispatch-mcp]="${PROJECT_ROOT}/dispatch"
     [project-jarvis]="${PROJECT_ROOT}/Project-JARVIS/packaging"

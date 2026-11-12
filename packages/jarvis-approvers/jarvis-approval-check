@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+"""polkit.spawn target for 48-jarvis-approval.rules: exit 0 = approved."""
+import sys
+
+sys.path.insert(0, "/usr/lib/jarvis")
+
+import jarvis_approval  # noqa: E402
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) != 2:
+            raise jarvis_approval.Rejected("usage: jarvis-approval-check <command line>")
+        jarvis_approval.check(sys.argv[1])
+    except Exception:
+        sys.exit(1)
