@@ -30,6 +30,9 @@ R2_PATH="${R2_REMOTE}:${R2_BUCKET}/repo/${ARCH}/${REPO_NAME}"
 
 REPO_DIR="${PROJECT_ROOT}/build/repo/${ARCH}/${REPO_NAME}"
 PKGDEST="${REPO_DIR}"
+# makepkg works in <PKGBUILD dir>/src unless BUILDDIR is set, and --cleanbuild
+# deletes it first: for dmcp and dispatch that is their Rust source tree.
+MAKEPKG_BUILDDIR="${PROJECT_ROOT}/build/makepkg"
 
 DRY_RUN=0
 SKIP_BUILD=0
@@ -76,7 +79,7 @@ build_package() {
         return 1
     fi
 
-    local cmd="PKGDEST=${PKGDEST} makepkg --nodeps --nocheck --skipinteg --force --cleanbuild"
+    local cmd="PKGDEST=${PKGDEST} BUILDDIR=${MAKEPKG_BUILDDIR} makepkg --nodeps --nocheck --skipinteg --force --cleanbuild"
     if [[ -n "$env" ]]; then
         cmd="env ${env} ${cmd}"
     fi
