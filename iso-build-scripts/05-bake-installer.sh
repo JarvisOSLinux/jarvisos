@@ -188,33 +188,6 @@ EOF
 sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/local/bin/mount-bootmnt.sh"
 echo -e "${GREEN}✓ mount-bootmnt.sh installed${NC}"
 
-# ── jarvis-setup.service — first-boot Ollama model pull ──────────────────────
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Creating jarvis-setup.service (first-boot Ollama model pull)...${NC}"
-sudo tee "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service" > /dev/null << 'SVCEOF'
-[Unit]
-Description=JARVIS OS First-Boot Setup (Ollama model pull)
-After=network-online.target ollama.service
-Wants=network-online.target ollama.service
-ConditionPathExists=!/var/lib/jarvis/.setup-done
-
-[Service]
-Type=oneshot
-User=root
-WorkingDirectory=/var/lib/jarvis
-ExecStartPre=/bin/sleep 5
-ExecStart=/usr/local/bin/jarvis-first-boot.sh
-ExecStartPost=/bin/touch /var/lib/jarvis/.setup-done
-RemainAfterExit=yes
-TimeoutStartSec=600
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-echo -e "${GREEN}✓ jarvis-setup.service created${NC}"
-
 # ── Polkit rules for liveuser ─────────────────────────────────────────────────
 sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d"
 sudo tee "${SQUASHFS_ROOTFS}/etc/polkit-1/rules.d/50-liveuser.rules" > /dev/null << 'EOF'
@@ -265,5 +238,5 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo -e "${BLUE}  ✓ Installer:    /usr/local/bin/jarvis-install${NC}"
 echo -e "${BLUE}  ✓ Auto-launch:  TTY1 → root auto-login → installer${NC}"
 echo -e "${BLUE}  ✓ Boot medium:  /usr/local/bin/mount-bootmnt.sh${NC}"
-echo -e "${BLUE}  ✓ First-boot:   jarvis-setup.service (Ollama model pull)${NC}"
+echo -e "${BLUE}  ✓ First-boot:   jarvis-setup.service (from step 4)${NC}"
 echo -e "${BLUE}  ✓ Polkit:       liveuser rules installed${NC}"

@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
-# test-jarvis-ollama.sh — JarvisOS Experience Launcher
+# test-jarvis.sh — JarvisOS Experience Launcher
 #
 # Bootstraps everything needed and launches the JARVIS autonomous agent:
 #   1. Install system deps (portaudio, python venv)
 #   2. Create Python venv + install vosk / pyaudio / requests
 #   3. Download Vosk small English model (~45 MB) if not present
-#   4. Pull an Ollama model if none available
+#   4. Start llama-server (downloads the GGUF model on first run)
 #   5. Launch jarvis_agent.py — voice + text autonomous agent
 #
 # Usage:
-#   ./test-jarvis-ollama.sh
-#   JARVIS_MODEL=qwen2.5:7b ./test-jarvis-ollama.sh
+#   ./test-jarvis.sh
+#   JARVIS_MODEL=Qwen/Qwen3-8B-GGUF:Q4_K_M ./test-jarvis.sh
+#   LLM_URL=http://192.168.1.10:11445 ./test-jarvis.sh   # use a running server
 # =============================================================================
 
 set -euo pipefail
 
-OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+LLM_URL="${LLM_URL:-http://127.0.0.1:11445}"
 JARVIS_MODEL="${JARVIS_MODEL:-}"
 JARVIS_DIR="${HOME}/.local/share/jarvis"
 VENV_DIR="${JARVIS_DIR}/venv"
@@ -133,82 +134,52 @@ else
     info "Skipping Vosk model download (voice unavailable)"
 fi
 
-# ── Step 4: Ollama + model ────────────────────────────────────────────────────
-step "Ollama"
+# ── Step 4: llama-server + model ──────────────────────────────────────────────
+step "Local LLM (llama.cpp)"
 
-curl -sf --max-time 5 "${OLLAMA_URL}/" | grep -q "Ollama" \
-    || die "Ollama not reachable at ${OLLAMA_URL}. Run: systemctl start ollama"
-ok "Ollama daemon is up"
+if ! curl -sf --max-time 3 "${LLM_URL}/health" &>/dev/null; then
+    [[ "$LLM_URL" == http://127.0.0.1:* || "$LLM_URL" == http://localhost:* ]] \
+        || die "No LLM server answering at ${LLM_URL}"
 
-# Collect available models
-AVAILABLE_MODELS=$(curl -sf "${OLLAMA_URL}/api/tags" \
-    | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-names = [m['name'] for m in d.get('models', [])]
-print('\n'.join(names))
-" 2>/dev/null || true)
-
-if [[ -z "$AVAILABLE_MODELS" ]]; then
-    warn "No models installed."
-    echo ""
-    # Pick recommendation based on RAM
-    MEM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
-    if (( MEM_AVAIL_MB > 20000 )); then
-        SUGGEST="qwen3:8b"
-    else
-        SUGGEST="qwen3:4b"
+    if ! command -v llama-server &>/dev/null; then
+        info "Installing llama-cpp..."
+        sudo pacman -S --noconfirm --needed llama-cpp ggml-vulkan || die "llama-cpp install failed"
     fi
 
-    echo -e "  Available RAM: ${BOLD}${MEM_AVAIL_MB} MB${RESET}"
-    echo -e "  Recommended:   ${BOLD}${SUGGEST}${RESET}"
-    echo ""
-    read -rp "  Pull ${SUGGEST} now? [Y/n] " pull_choice
-    if [[ "${pull_choice:-Y}" =~ ^[Yy]$ ]]; then
-        command -v ollama &>/dev/null || die "ollama CLI not found — install from https://ollama.com"
-        info "Pulling ${SUGGEST} (this may take a few minutes)..."
-        ollama pull "$SUGGEST" || die "Pull failed"
-        AVAILABLE_MODELS="$SUGGEST"
-    else
-        die "No model available. Pull one first: ollama pull qwen3:4b"
+    if [[ -z "$JARVIS_MODEL" ]]; then
+        MEM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+        if (( MEM_AVAIL_MB > 20000 )); then
+            JARVIS_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M"
+        else
+            JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
+        fi
     fi
+
+    LLM_PORT="${LLM_URL##*:}"
+    LLM_LOG="${JARVIS_DIR}/llama-server.log"
+    mkdir -p "$JARVIS_DIR"
+    info "Starting llama-server for ${BOLD}${JARVIS_MODEL}${RESET} (first run downloads the model)"
+    LLAMA_CACHE="${JARVIS_DIR}/models" setsid nohup llama-server \
+        -hf "$JARVIS_MODEL" --alias "$JARVIS_MODEL" --host 127.0.0.1 \
+        --port "$LLM_PORT" -ngl 999 --jinja >"$LLM_LOG" 2>&1 &
+    echo $! > "${JARVIS_DIR}/llama-server.pid"
+
+    for _ in $(seq 1 450); do
+        curl -sf --max-time 3 "${LLM_URL}/health" &>/dev/null && break
+        kill -0 "$(cat "${JARVIS_DIR}/llama-server.pid")" 2>/dev/null \
+            || die "llama-server exited — see ${LLM_LOG}"
+        sleep 2
+    done
+    curl -sf --max-time 3 "${LLM_URL}/health" &>/dev/null \
+        || die "llama-server not ready after 15 min — see ${LLM_LOG}"
 fi
+ok "LLM server is up at ${LLM_URL}"
 
-# Auto-select model if not specified
 if [[ -z "$JARVIS_MODEL" ]]; then
-    # Prefer larger models on this machine (62GB RAM)
-    MEM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
-    PREFER_SIZE="medium"
-    (( MEM_AVAIL_MB > 32768 )) && PREFER_SIZE="large"
-    (( MEM_AVAIL_MB < 8192  )) && PREFER_SIZE="small"
-
-    JARVIS_MODEL=$(python3 - "$PREFER_SIZE" <<'PYEOF'
-import sys
-prefer = sys.argv[1]
-import os, subprocess
-result = subprocess.run(['curl','-sf','http://localhost:11434/api/tags'],
-                       capture_output=True, text=True)
-import json
-models = [m['name'] for m in json.loads(result.stdout).get('models', [])]
-
-large  = ['qwen3:8','qwen3:14','qwen3:32','qwen2.5:7','llama3.1','llama3:8','mistral:7','gemma3:12','gemma3:27','phi4']
-medium = ['qwen3:4','qwen2.5:3','llama3.2:3','gemma3:4','phi3','gemma2:9']
-small  = ['qwen3:1','qwen2.5:1','gemma3:1','llama3.2:1','tinyllama','phi3:mini']
-
-order = {'large': large+medium+small,
-         'medium': medium+large+small,
-         'small': small+medium+large}[prefer]
-
-for pat in order:
-    for m in models:
-        if pat.lower() in m.lower():
-            print(m); sys.exit(0)
-print(models[0] if models else '')
-PYEOF
-    )
+    JARVIS_MODEL=$(curl -sf "${LLM_URL}/v1/models" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null || true)
 fi
-
-[[ -z "$JARVIS_MODEL" ]] && die "Could not select a model."
+[[ -z "$JARVIS_MODEL" ]] && die "Could not determine the served model."
 ok "Active model: ${BOLD}${JARVIS_MODEL}${RESET}"
 
 # ── Step 5: Launch agent in a new terminal window ────────────────────────────
@@ -218,11 +189,11 @@ echo ""
 VOSK_PATH=""
 $VOICE_OK && VOSK_PATH="$VOSK_DIR"
 
-export OLLAMA_URL JARVIS_MODEL VOSK_MODEL_PATH="$VOSK_PATH"
+export LLM_URL JARVIS_MODEL VOSK_MODEL_PATH="$VOSK_PATH"
 
 # Build the command the new terminal will run.
 # Keep the window open on exit so the user can read the last output.
-AGENT_CMD="export OLLAMA_URL='${OLLAMA_URL}' JARVIS_MODEL='${JARVIS_MODEL}' VOSK_MODEL_PATH='${VOSK_PATH}'; \
+AGENT_CMD="export LLM_URL='${LLM_URL}' JARVIS_MODEL='${JARVIS_MODEL}' VOSK_MODEL_PATH='${VOSK_PATH}'; \
 source '${VENV_DIR}/bin/activate'; \
 python3 '${AGENT_SCRIPT}'; \
 echo; read -rp 'Press Enter to close…'"

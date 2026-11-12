@@ -3,7 +3,7 @@
 #
 # Required env vars:
 #   MOUNT_ROOT      — e.g. /mnt/jarvis-install
-#   JARVIS_MODEL    — e.g. qwen3:4b
+#   JARVIS_MODEL    — Hugging Face GGUF ref (user/repo[:quant]) or none
 #   INSTALLER_PATH  — absolute path to jarvis-install.sh (copied into chroot)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +13,7 @@ need_root
 require_env MOUNT_ROOT JARVIS_MODEL INSTALLER_PATH
 
 MOUNT_ROOT="${MOUNT_ROOT}"
-JARVIS_MODEL="${JARVIS_MODEL:-qwen3:4b}"
+JARVIS_MODEL="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
 
 # ── Internet check ─────────────────────────────────────────────────────────
 info "Checking internet connectivity..."
@@ -82,7 +82,7 @@ cp --dereference /etc/resolv.conf "${MOUNT_ROOT}/etc/resolv.conf" 2>/dev/null ||
 printf '%s\n' "${JARVIS_MODEL}" > "${MOUNT_ROOT}/tmp/.jarvis-model-choice"
 
 # ── Install JARVIS components via overlay in chroot ───────────────────────
-info "Installing JARVIS OS components (KDE, Ollama, JARVIS stack)..."
+info "Installing JARVIS OS components (KDE, llama.cpp, JARVIS stack)..."
 echo ""
 arch-chroot "${MOUNT_ROOT}" bash /tmp/jarvis-install --overlay \
     || die "JARVIS component install failed (arch-chroot --overlay)"

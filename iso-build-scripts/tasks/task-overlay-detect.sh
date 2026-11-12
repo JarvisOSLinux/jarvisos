@@ -13,7 +13,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
-JARVIS_MODEL="${JARVIS_MODEL:-qwen3:4b}"
+JARVIS_MODEL="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
 OVERLAY_MODE="${OVERLAY_MODE:---overlay}"
 
 # ── WSL detection (must precede generic Linux, since WSL reports as the

@@ -3,14 +3,14 @@
 # No kernel install — JARVIS runs on the stock kernel.
 #
 # Required env vars:
-#   JARVIS_MODEL  — e.g. "qwen3:4b"
+#   JARVIS_MODEL  — Hugging Face GGUF ref (user/repo[:quant])
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 need_root
 
-JARVIS_MODEL="${JARVIS_MODEL:-qwen3:4b}"
+JARVIS_MODEL="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
 
 trap 'echo "JARVIS RHEL overlay failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
@@ -94,16 +94,9 @@ if [ -f /etc/os-release ] && ! grep -q '^ID=jarvisos' /etc/os-release 2>/dev/nul
 fi
 ok "JARVIS OS branding applied"
 
-# ── Ollama ────────────────────────────────────────────────────────────────
-info "Installing Ollama..."
-if command -v ollama >/dev/null 2>&1; then
-    ok "Ollama already installed ($(ollama --version 2>/dev/null || echo unknown))"
-else
-    info "Installing Ollama via official install script..."
-    curl -fsSL https://ollama.com/install.sh | sh \
-        || die "Ollama install failed — check network connectivity"
-    ok "Ollama installed"
-fi
+# ── llama.cpp runner ──────────────────────────────────────────────────────
+info "Installing llama.cpp (llama-server)..."
+install_llama_cpp_generic dnf
 
 # ── JARVIS user + directories ─────────────────────────────────────────────
 info "Setting up JARVIS user and directories..."
@@ -111,7 +104,7 @@ getent group  jarvis >/dev/null 2>&1 || groupadd -r jarvis
 getent passwd jarvis >/dev/null 2>&1 || \
     useradd -r -g jarvis -d /var/lib/jarvis -s /sbin/nologin \
             -c 'JARVIS AI Assistant' jarvis
-for grp in audio video network systemd-journal; do
+for grp in audio video render network systemd-journal; do
     getent group "${grp}" >/dev/null 2>&1 && \
         usermod -aG "${grp}" jarvis 2>/dev/null || true
 done
@@ -191,11 +184,8 @@ if [ -f /usr/lib/jarvis/.env ]; then
             && sed -i "s|^${k}=.*|${k}=${v}|" "${f}" \
             || echo "${k}=${v}" >> "${f}"
     }
-    local _inst_model="${JARVIS_MODEL:-qwen3:4b}"
-    local _auto_pull="true"
-    [ "${_inst_model}" = "none" ] && { _inst_model="qwen3:4b"; _auto_pull="false"; }
-    _set_env LLM_AUTO_PULL     "${_auto_pull}"
-    _set_env LLM_MODEL         "${_inst_model}"
+    _inst_model="${JARVIS_MODEL:-${JARVIS_DEFAULT_MODEL}}"
+    write_jarvis_providers "${_inst_model}"
     _set_env VOSK_MODEL_PATH   /var/lib/jarvis/models/vosk/vosk-model-small-en-us-0.15
     _set_env TTS_MODEL_ONNX    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx
     _set_env TTS_MODEL_JSON    /var/lib/jarvis/models/piper/en_US-amy-medium.onnx.json
@@ -252,14 +242,14 @@ info "Installing systemd service units..."
 cat > /usr/lib/systemd/system/jarvis.service << 'JARVISSVC'
 [Unit]
 Description=JARVIS AI Voice Assistant
-After=network.target sound.target ollama.service
-Wants=network.target ollama.service
+After=network.target sound.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=jarvis
 Group=jarvis
-SupplementaryGroups=audio video network systemd-journal
+SupplementaryGroups=audio video render network systemd-journal
 WorkingDirectory=/usr/lib/jarvis
 RuntimeDirectory=jarvis
 RuntimeDirectoryMode=0775
@@ -276,7 +266,6 @@ Environment=JARVIS_DATA_DIR=/var/lib/jarvis
 Environment=JARVIS_LOG_DIR=/var/log/jarvis
 Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
 Environment=PYTHONPATH=/usr/lib
-Environment=OLLAMA_HOST=127.0.0.1:11434
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=jarvis
@@ -285,57 +274,12 @@ SyslogIdentifier=jarvis
 WantedBy=multi-user.target
 JARVISSVC
 
-cat > /usr/local/bin/jarvis-first-boot.sh << 'FIRSTBOOT'
-#!/bin/bash
-MARKER="/var/lib/jarvis/.setup-done"
-LOG="/var/log/jarvis/first-boot.log"
-mkdir -p /var/log/jarvis
-exec > >(tee -a "$LOG") 2>&1
-echo "=== JARVIS first-boot $(date) ==="
-[ -f "$MARKER" ] && echo "Already done." && exit 0
-MODEL="qwen3:4b"
-AUTO_PULL="true"
-if [ -f /usr/lib/jarvis/.env ]; then
-    _m=$(grep -E '^LLM_MODEL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
-    [ -n "$_m" ] && MODEL="$_m"
-    _ap=$(grep -E '^LLM_AUTO_PULL=' /usr/lib/jarvis/.env | cut -d= -f2- || true)
-    [ -n "$_ap" ] && AUTO_PULL="$_ap"
-fi
-[ "${AUTO_PULL}" = "false" ] && { touch "$MARKER"; exit 0; }
-echo "Waiting for Ollama..."
-for i in $(seq 1 60); do
-    curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 2
-done
-ollama list 2>/dev/null | grep -q "${MODEL%%:*}" || ollama pull "$MODEL" || exit 1
-touch "$MARKER"
-echo "First-boot complete."
-FIRSTBOOT
-chmod 755 /usr/local/bin/jarvis-first-boot.sh
-
-cat > /usr/lib/systemd/system/jarvis-setup.service << 'SETUPSVC'
-[Unit]
-Description=JARVIS First-Boot Setup (pull LLM model)
-After=network-online.target ollama.service
-Wants=network-online.target ollama.service
-ConditionPathExists=!/var/lib/jarvis/.setup-done
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/jarvis-first-boot.sh
-RemainAfterExit=yes
-TimeoutStartSec=600
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-SETUPSVC
+install_jarvis_first_boot
 ok "Systemd service units installed"
 
 # ── Enable services ────────────────────────────────────────────────────────
 info "Enabling systemd services..."
 systemctl daemon-reload 2>/dev/null || true
-systemctl enable ollama.service          2>/dev/null || true
 systemctl enable jarvis.service          2>/dev/null || true
 systemctl enable jarvis-setup.service    2>/dev/null || true
 systemctl enable NetworkManager.service  2>/dev/null || true
