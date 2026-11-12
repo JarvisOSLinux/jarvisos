@@ -319,6 +319,24 @@ if [ "${_DMCP_BINARY_READY}" = "1" ]; then
         sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
         sudo chown root:root "${SQUASHFS_ROOTFS}/usr/bin/dmcp"
 
+        # polkit action for dmcp's pkexec re-exec. Without it pkexec falls back to
+        # the generic exec action (auth_admin, no keep window): one password per
+        # root call instead of one per few minutes (Project-JARVIS#310).
+        if [ -f "${DMCP_DIR}/policy/org.jarvisos.dmcp.policy" ]; then
+            sudo install -Dm644 "${DMCP_DIR}/policy/org.jarvisos.dmcp.policy" \
+                "${SQUASHFS_ROOTFS}/usr/share/polkit-1/actions/org.jarvisos.dmcp.policy"
+        else
+            echo -e "${YELLOW}Warning: ${DMCP_DIR}/policy missing — root MCP calls will ask for the password on every call${NC}"
+        fi
+
+        # Timed unlock for root MCP calls: `sudo jarvis-unlock 4h` (Project-JARVIS#310)
+        sudo install -Dm644 "${PROJECT_ROOT}/packages/polkit/49-jarvis-unlock.rules" \
+            "${SQUASHFS_ROOTFS}/usr/share/polkit-1/rules.d/49-jarvis-unlock.rules"
+        sudo install -Dm755 "${PROJECT_ROOT}/packages/polkit/jarvis-unlock-check" \
+            "${SQUASHFS_ROOTFS}/usr/lib/jarvis/jarvis-unlock-check"
+        sudo install -Dm755 "${PROJECT_ROOT}/packages/polkit/jarvis-unlock" \
+            "${SQUASHFS_ROOTFS}/usr/bin/jarvis-unlock"
+
         # System-level MCP sources list (empty by default; registry URLs added here)
         sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/mcp"
         sudo tee "${SQUASHFS_ROOTFS}/etc/mcp/sources.list" > /dev/null << 'DMCP_SOURCES_EOF'
