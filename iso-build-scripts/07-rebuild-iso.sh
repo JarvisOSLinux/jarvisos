@@ -206,7 +206,7 @@ elif sudo test -f "${ROOTFS_BOOT}/vmlinuz-linux-jarvisos"; then
     done
 else
     echo -e "${YELLOW}⚠ linux-jarvisos kernel not found in kernel-files/ or rootfs/boot/${NC}"
-    echo -e "${YELLOW}  Calamares will fall back to the stock linux kernel for installation.${NC}"
+    echo -e "${YELLOW}  jarvis-install will fall back to the stock linux kernel for installation.${NC}"
     echo -e "${YELLOW}  Run 'make step3b' to build linux-jarvisos.${NC}"
 fi
 
@@ -214,7 +214,8 @@ fi
 # The boot entries (syslinux, systemd-boot, efiboot.img) all reference the
 # standard names: vmlinuz-linux, initramfs-linux.img.  Rather than rewriting
 # every boot config, we overwrite the stock files with linux-jarvisos content.
-# The originals under their -jarvisos names remain for Calamares unpackfs.
+# The -jarvisos copies stay on the ISO; jarvis-install installs the kernel from
+# the packages staged in /opt/jarvis-kernel-pkg, not from these files.
 if [ "${JARVISOS_KERNEL_AVAILABLE}" = true ]; then
     echo -e "${BLUE}Setting linux-jarvisos as PRIMARY boot kernel...${NC}"
     cp -f "${ISO_BOOT_DIR}/vmlinuz-linux-jarvisos" "${ISO_BOOT_DIR}/vmlinuz-linux"

@@ -424,7 +424,7 @@ if [ "${HOST_INSTALL}" -eq 1 ]; then
     echo -e "${GREEN}✓ Reboot and select linux-jarvisos from your bootloader${NC}"
 else
     echo -e "${GREEN}✓ Packages installed in rootfs via pacman${NC}"
-    echo -e "${GREEN}✓ Calamares will install linux-jarvisos onto the target system${NC}"
+    echo -e "${GREEN}✓ jarvis-install will install linux-jarvisos onto the target system${NC}"
     echo -e "${GREEN}✓ Stock linux kernel remains for live boot hardware compatibility${NC}"
 fi
 echo ""
