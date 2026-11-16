@@ -143,26 +143,29 @@ FIRSTBOOT
 
 # GPU-aware llama.cpp install (Arch): backend packages per vendor
 install_llama_cpp_arch() {
-    local gpu; gpu=$(detect_gpu_vendor)
+    local gpu backend; gpu=$(detect_gpu_vendor)
     info "GPU detected: ${gpu} — selecting llama.cpp backend"
     case "${gpu}" in
         nvidia)
+            backend="CUDA backend"
             pacman -S --noconfirm --needed llama-cpp ggml-cuda nvidia-dkms nvidia-utils dkms cuda \
-                || warn "Some NVIDIA/CUDA packages failed"
-            ok "llama.cpp installed with CUDA backend" ;;
+                || warn "Some NVIDIA/CUDA packages failed" ;;
         amd)
+            backend="Vulkan backend (AMD)"
             pacman -S --noconfirm --needed llama-cpp ggml-vulkan vulkan-radeon \
-                || warn "Some AMD Vulkan packages failed"
-            ok "llama.cpp installed with Vulkan backend (AMD)" ;;
+                || warn "Some AMD Vulkan packages failed" ;;
         intel-arc)
+            backend="Vulkan backend (Intel Arc)"
             pacman -S --noconfirm --needed llama-cpp ggml-vulkan vulkan-intel \
                 intel-compute-runtime level-zero-loader \
-                || warn "Some Intel Arc packages failed"
-            ok "llama.cpp installed with Vulkan backend (Intel Arc)" ;;
+                || warn "Some Intel Arc packages failed" ;;
         *)
-            pacman -S --noconfirm --needed llama-cpp || warn "llama-cpp install failed"
-            ok "llama.cpp installed (CPU mode)" ;;
+            backend="CPU mode"
+            pacman -S --noconfirm --needed llama-cpp || warn "llama-cpp install failed" ;;
     esac
+    command -v llama-server >/dev/null 2>&1 \
+        || die "llama-server not found after installing llama-cpp — see pacman output above"
+    ok "llama.cpp installed (${backend})"
 }
 
 # llama.cpp on non-Arch distros: distro package if one exists, otherwise a

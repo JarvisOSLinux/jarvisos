@@ -28,7 +28,7 @@ echo -e "${BLUE}Detected distribution: ${DISTRO}${NC}"
 # - xorriso (libisoburn): for creating bootable ISO files
 # - p7zip / 7zip: for extracting the source Arch Linux ISO
 # - dosfstools: for mkfs.fat (creating EFI boot image)
-# - fakeroot: for makepkg without root (calamares-config package build)
+# - fakeroot: for makepkg without root (package builds)
 # - git: for fetching the sibling repos (sources.conf)
 # - curl: for downloading packages during build
 # - wget: fallback downloader
@@ -325,7 +325,7 @@ echo -e "${BLUE}  3. Run: make step1 (extract ISO)${NC}"
 echo -e "${BLUE}  4. Run: make step2 (unsquash rootfs)${NC}"
 echo -e "${BLUE}  5. Run: make step3 (install KDE Plasma + packages)${NC}"
 echo -e "${BLUE}  6. Run: make step4 (install JARVIS)${NC}"
-echo -e "${BLUE}  7. Run: make step5 (install Calamares)${NC}"
+echo -e "${BLUE}  7. Run: make step5 (install TUI installer)${NC}"
 echo -e "${BLUE}  8. Run: make step6 (rebuild SquashFS)${NC}"
 echo -e "${BLUE}  9. Run: make step7 (rebuild ISO)${NC}"
 echo -e "${BLUE}     Or: make all (run all steps sequentially)${NC}"

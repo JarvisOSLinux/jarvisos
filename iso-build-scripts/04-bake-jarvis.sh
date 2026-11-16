@@ -778,7 +778,7 @@ sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service"
 echo -e "${GREEN}✓ First-boot service created${NC}"
 
 # Step 16: Enable services in rootfs (systemctl enable just creates symlinks in chroot)
-# Also enabled by Calamares services-systemd.conf on installed system as a safety net.
+# jarvis-install enables them again on the installed system (tasks/task-configure.sh).
 echo -e "${BLUE}Enabling JARVIS systemd services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable jarvis.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable jarvis-setup.service 2>/dev/null || true
@@ -929,11 +929,15 @@ fi
 
 # 2. Check the local AI engine
 step "Checking the local AI engine..."
+if ! command -v llama-server >/dev/null 2>&1; then
+    warn "llama-server missing, installing llama-cpp..."
+    sudo pacman -S --noconfirm --needed llama-cpp || true
+fi
 if command -v llama-server >/dev/null 2>&1; then
     ok "llama-server found"
 else
-    fail "llama-server missing"
-    echo -e "    ${DIM}Install it: sudo pacman -S llama-cpp${NC}"
+    fail "Could not install llama-cpp"
+    echo -e "    ${DIM}Check your connection and run: sudo /usr/local/bin/jarvis-welcome.sh${NC}"
     echo ""
     echo -e "${DIM}  Press Enter to close...${NC}"
     read -r

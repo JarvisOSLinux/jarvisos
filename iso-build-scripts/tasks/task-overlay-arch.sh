@@ -537,10 +537,17 @@ echo ""
 JENV="JARVIS_CONFIG_DIR=/etc/jarvis JARVIS_DATA_DIR=/var/lib/jarvis JARVIS_MODELS_DIR=/var/lib/jarvis/models"
 jarvis_as_service() { sudo -u jarvis env ${JENV} /usr/bin/jarvis "$@"; }
 echo -e "  Checking local AI engine..."
+if ! command -v llama-server >/dev/null 2>&1; then
+    echo -e "  ${YELLOW}⚠ llama-server missing, installing llama-cpp...${NC}"
+    sudo pacman -S --noconfirm --needed llama-cpp
+fi
 if command -v llama-server >/dev/null 2>&1; then
     echo -e "  ${GREEN}✓ llama-server found${NC}"
 else
-    echo -e "  ${YELLOW}⚠ llama-server missing — install it: sudo pacman -S llama-cpp${NC}"
+    echo -e "  ${RED}✗ Could not install llama-cpp. Check your connection and rerun: /usr/local/bin/jarvis-welcome.sh${NC}"
+    echo -e "  Press Enter to close..."
+    read -r
+    exit 1
 fi
 echo ""
 CURRENT_MODEL=$(python3 -c 'import json
