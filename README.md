@@ -106,10 +106,9 @@ jarvisos/
 │   ├── include/uapi/linux/jarvis.h  # Userspace API (ioctls, structs, enums)
 │   └── arch/x86/configs/jarvisos.config  # JARVIS kernel config fragment
 ├── packages/
-│   ├── linux-jarvisos/           # Arch PKGBUILD for the custom kernel
-│   │   ├── PKGBUILD              # Produces linux-jarvisos + linux-jarvisos-headers
-│   │   └── linux-jarvisos.install
-│   └── calamares-config/         # Calamares installer branding + configuration
+│   └── linux-jarvisos/           # Arch PKGBUILD for the custom kernel
+│       ├── PKGBUILD              # Produces linux-jarvisos + linux-jarvisos-headers
+│       └── linux-jarvisos.install
 ├── Project-JARVIS/               # JARVIS daemon + tooling (cloned by fetch-sources.sh)
 ├── scripts/                      # ISO build pipeline
 │   ├── build.config              # Build paths and ISO filename
