@@ -28,7 +28,7 @@ echo -e "${BLUE}Detected distribution: ${DISTRO}${NC}"
 # - xorriso (libisoburn): for creating bootable ISO files
 # - p7zip / 7zip: for extracting the source Arch Linux ISO
 # - dosfstools: for mkfs.fat (creating EFI boot image)
-# - fakeroot: for makepkg without root (calamares-config package build)
+# - fakeroot: for makepkg without root (package builds)
 # - git: for fetching the sibling repos (sources.conf)
 # - curl: for downloading packages during build
 # - wget: fallback downloader
