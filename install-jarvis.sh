@@ -140,13 +140,7 @@ select_model() {
     if [[ -n "$JARVIS_MODEL" ]]; then
         info "Model: ${JARVIS_MODEL} (user-specified)"; return
     fi
-    if   (( ram_gb >= 32 )); then JARVIS_MODEL="Qwen/Qwen3-14B-GGUF:Q4_K_M"
-    elif (( ram_gb >= 16 )); then JARVIS_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M"
-    elif (( ram_gb >= 8  )); then JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-    else
-        warn "< 8 GB RAM — model skipped. Set JARVIS_MODEL manually."
-        NO_MODEL=1; JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-    fi
+    JARVIS_MODEL=$(jarvis_recommended_model)
     info "RAM: ${ram_gb}GB → model: ${JARVIS_MODEL}"
 }
 select_model
