@@ -146,7 +146,7 @@ dmcp/              (branch: main)
 dispatch/          (branch: main)
 ```
 
-`cachyos-calamares` is gone, not just discontinued. Ignore any stale references to it elsewhere (e.g. README.md still describes a Calamares install flow; the actual installer is `jarvis-install.sh`, see below).
+`cachyos-calamares` is gone, not just discontinued. Ignore any stale references to it elsewhere (the actual installer is `jarvis-install.sh`, see below).
 
 ### Why dispatch/ and dmcp/ appear twice
 

@@ -74,7 +74,7 @@ Full asset table, attacker profiles, and the OpenClaw CVE-by-CVE comparison (JAR
 
 JARVIS OS is a custom Linux distribution built on a CachyOS/Arch base where an AI assistant handles system administration, file management, and hardware control through natural language — voice or text. The kernel itself speaks to the AI through a dedicated character device (`/dev/jarvis`), making the AI a first-class OS citizen rather than a userspace afterthought.
 
-> **Status**: Work in progress. The custom kernel (`linux-jarvisos`), JARVIS driver, and agent runtime are functional. The full ISO build pipeline builds successfully; live-boot testing and the Calamares installer are still being refined.
+> **Status**: Work in progress. The custom kernel (`linux-jarvisos`), JARVIS driver, and agent runtime are functional. The full ISO build pipeline builds successfully; live-boot testing and the `jarvis-install` TUI installer are still being refined.
 
 ---
 
@@ -119,7 +119,7 @@ jarvisos/
 │   ├── 03-bake-wayland.sh        # Install KDE Plasma Wayland + all system packages
 │   ├── 03b-build-kernel.sh       # Build linux-jarvisos packages and install into rootfs
 │   ├── 04-bake-jarvis.sh         # Install Project-JARVIS daemon
-│   ├── 05-bake-calamares.sh      # Install Calamares installer
+│   ├── 05-bake-installer.sh      # Install jarvis-install TUI installer (auto-launches on TTY1)
 │   ├── 06-squash-fs.sh           # Repack SquashFS
 │   ├── 07-rebuild-iso.sh         # Assemble final bootable ISO
 │   └── booter.sh                 # QEMU launcher for local testing
@@ -468,7 +468,7 @@ The systemd unit sets `JARVIS_CONFIG_DIR=/etc/jarvis` via `Environment=`. The `/
 
 ## Building the JarvisOS ISO
 
-> **Work in progress.** The build pipeline runs end-to-end, but live-boot reliability and the Calamares installer are still being stabilized. Expect rough edges.
+> **Work in progress.** The build pipeline runs end-to-end, but live-boot reliability and the `jarvis-install` TUI installer are still being stabilized. Expect rough edges.
 
 ### Requirements
 
@@ -519,7 +519,7 @@ make step2    # Unsquash rootfs → build/iso-rootfs/
 make step3    # Install KDE Plasma Wayland + all system packages into rootfs
 make step3b   # Build linux-jarvisos kernel + install into rootfs
 make step4    # Install Project-JARVIS daemon
-make step5    # Install Calamares installer
+make step5    # Install jarvis-install TUI installer (auto-launches on TTY1)
 make step6    # Repack rootfs into SquashFS
 make step7    # Assemble final bootable ISO → build/jarvisos-YYYYMMDD-x86_64.iso
 
@@ -545,7 +545,7 @@ make clean    # Remove all build artifacts
 sudo dd if=build/jarvisos-*-x86_64.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-Boot from USB and use the Calamares installer on the desktop.
+Boot from USB; the `jarvis-install` TUI installer launches automatically on TTY1.
 
 ### What each script does
 
@@ -567,8 +567,8 @@ Builds the `linux-jarvisos` and `linux-jarvisos-headers` packages using `makepkg
 #### `04-bake-jarvis.sh`
 Copies `Project-JARVIS` into the rootfs, creates the Python venv, installs llama.cpp, sets up the `jarvis.service` systemd unit, and places the CLI wrappers.
 
-#### `05-bake-calamares.sh`
-Installs Calamares and applies the JARVIS OS branding, partitioning, and post-install configuration.
+#### `05-bake-installer.sh`
+Installs the `jarvis-install` TUI installer (repo-root `jarvis-install.sh`) and its task scripts into the rootfs, stages the linux-jarvisos packages in `/opt/jarvis-kernel-pkg/` for it, and sets TTY1 to auto-login as root and launch it.
 
 #### `06-squash-fs.sh`
 Repacks `build/iso-rootfs/` back into a SquashFS image with `zstd` compression. Removes the build-time `resolv.conf` and replaces it with a symlink to `systemd-resolved`'s stub.
@@ -595,7 +595,7 @@ Assembles the final ISO using `xorriso`. Dynamically sizes `efiboot.img` to fit 
 | Touchpad on live boot | Working | libinput + psmouse/i2c_hid modules |
 | JARVIS TUI (`jarvis tui`) | Working | Requires `textual` in `/opt/jarvis-env`; install with `sudo /opt/jarvis-env/bin/pip install textual` |
 | Kernel module autoload at boot | Working | `/etc/modules-load.d/jarvis.conf` → `jarvis`; `dibs` dep resolved automatically |
-| Calamares installer | In progress | Installs but post-install configuration needs work |
+| TUI installer (`jarvis-install`) | In progress | Installs; post-install JARVIS configuration incomplete |
 | JARVIS daemon on installed system | In progress | Service boots; model selection needs tuning |
 
 ---
@@ -762,7 +762,6 @@ See the full table in the [Developer Setup](#developer-setup-on-an-installed-jar
 4. Submit a PR with a description of what changed and how you tested it
 
 Areas that need work:
-- Calamares post-install script (sets up linux-jarvisos as the installed bootloader entry)
 - JARVIS daemon auto-startup and model selection on first boot
 - Kernel → daemon query path (the `jarvis_post_query` / `JARVIS_IOC_RESPOND` round-trip)
 - Voice TTS output (Piper integration)

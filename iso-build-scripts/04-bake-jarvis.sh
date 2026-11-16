@@ -778,7 +778,7 @@ sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service"
 echo -e "${GREEN}✓ First-boot service created${NC}"
 
 # Step 16: Enable services in rootfs (systemctl enable just creates symlinks in chroot)
-# Also enabled by Calamares services-systemd.conf on installed system as a safety net.
+# jarvis-install enables them again on the installed system (tasks/task-configure.sh).
 echo -e "${BLUE}Enabling JARVIS systemd services...${NC}"
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable jarvis.service 2>/dev/null || true
 sudo arch-chroot "${SQUASHFS_ROOTFS}" systemctl enable jarvis-setup.service 2>/dev/null || true
