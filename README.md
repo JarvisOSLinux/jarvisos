@@ -10,7 +10,7 @@
 
 ## Security Protocols & Threat Model
 
-JARVIS OS is a research platform studying what happens when a large language model is given full OS privileges. The [sic-threat taxonomy](https://jarvisoslinux.org/research#taxonomy) documented on the website — six threats formalized in the WSU Everett paper (`Project-JARVIS/docs/research.md`), plus the novel "forgetful context" finding (#7) — drives the security work below. **Canonical enforcement status lives in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`; this section summarizes it and must not drift ahead of it.**
+JARVIS OS is a research platform studying what happens when a large language model is given full OS privileges. The [six-threat taxonomy](https://jarvisoslinux.org/research#taxonomy) documented on the website and formalized in the WSU Everett paper (`Project-JARVIS/docs/research.md`) drives the security work below. ("Forgetful context" was split out as a seventh threat in 2026-07 and merged back into Bloated Context in 2026-08: Bloated Context now covers both constraints crowded out of a full window and constraints never durably stored, so a context refresh loses them.) **Canonical enforcement status lives in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`; this section summarizes it and must not drift ahead of it.**
 
 Enforcement is layered: the **TLA (Threat Level Access)** confirmation gate runs in userspace in the JARVIS daemon (`Project-JARVIS/jarvis/core/confirmation_manager.py`, `jarvis/runtime/dispatch_flow.py`) and is the layer actually gating tool calls today. The kernel's own 4-tier policy engine (`jarvis_policy.c`, SAFE/ELEVATED/DANGEROUS/FORBIDDEN via `/dev/jarvis`) is real and working at the OS level but is **not yet consulted from the daemon** — `KernelClient.policy_check` has no caller in the execution path. Do not describe current behavior as "kernel-enforced" until that wiring lands.
 
@@ -18,13 +18,12 @@ Enforcement is layered: the **TLA (Threat Level Access)** confirmation gate runs
 
 | # | Threat | Status |
 |---|--------|--------|
-| 1 | MCP keyword-match / tool-selection accuracy | partial — keyword fallback with embedding-first search when available |
-| 2 | Misleading MCP server descriptions | partial — official-tier review of tool descriptions + structured schema |
-| 3 | MCP server integrity verification | implemented — `dmcp install` verifies `integrity.manifestSha256` before parse/merge, agent source-confined to configured registries; cryptographic (keyed) signatures still planned |
-| 4 | Unauthorized sudo via MCP | implemented, with a known gap — bundled `shellmcp`'s `run_command` does not declare `confirmation_required`, so under default `smart` mode it's gated only by the sudo password prompt, not the confirmation layer (Project-JARVIS #159) |
-| 5 | Sudo capability exploitation | implemented, same gap as #4 — TLA gate is goal-scoped |
-| 6 | Bloated context | partial — dispatch rolling window + contextor pruning; persistent constraint preservation across context refreshes not implemented |
-| 7 | Forgetful context (novel) | **not yet mitigated** — no persistent constraint register in the daemon today; this is the highest-priority open item |
+| 1 | Malicious MCP servers | implemented — registry vetting; `dmcp install` verifies `integrity.manifestSha256` before parse/merge; agent source-confined to configured registries (official tier not yet populated; cryptographic keyed signatures still planned) |
+| 2 | Prompt injection | implemented — dispatch wraps tool output in a 128-bit boundary nonce that the daemon verifies (`jarvis/dispatch/boundary.py`, Project-JARVIS #165); system prompts tell the LLM to treat boundary content as data only |
+| 3 | Misleading MCP server usage | partial — official-tier review of tool descriptions + structured schema |
+| 4 | Unauthorized sudo via MCP | implemented — the TLA gate's host floor (`jarvis/core/threat_level.py`) force-confirms command-execution tools and dangerous payloads regardless of manifest flags (Project-JARVIS #159 / #162, closed) |
+| 5 | Sudo capability exploitation | implemented — same confirmation gate as #4 |
+| 6 | Bloated context (novel) | partial — the saturation face is bounded (dispatch rolling window, contextor pruning, and the daemon's hot window + rolling summary applied on every ROOT turn, #213); the non-persistence face is mitigated for path-prefix deny rules by the persistent constraint register (`jarvis/core/constraint_store.py`, #214) and still open for broader constraints |
 | — | Kernel 4-tier policy engine | working at the OS level, but **not consulted from the daemon** (OS-side, disconnected from the userspace gate above) |
 
 ### Threat Model Summary
@@ -37,14 +36,14 @@ Full asset table, attacker profiles, and the OpenClaw CVE-by-CVE comparison (JAR
 
 ### Open Work
 
-- [ ] **#7 — Forgetful context constraint register (Novel / Critical)**
-  Implement a persistent constraint register in the daemon that re-injects active security rules into every LLM prompt, independent of context window state. No prior literature — this is JARVIS OS's own finding.
+- [ ] **#6 — Generalize the persistent constraint register (Bloated Context, novel / highest priority)**
+  The register (`jarvis/core/constraint_store.py`, Project-JARVIS #214) persists path-prefix deny rules on disk, enforces them at the dispatch gate ahead of the confirmation mode, and re-injects them into every ROOT prompt. Constraints that are not path-prefix deny rules can still be lost when the context is refreshed or summarized. No prior literature treats context-lifecycle failure as a security threat — this is JARVIS OS's own finding.
 
 - [ ] **Wire kernel policy engine into the daemon's execution path**
   `KernelClient.policy_check` and `get_api_key` exist but have no callers. Until the daemon actually consults `/dev/jarvis` policy before executing tool calls, the kernel-side 4-tier engine is defense-in-depth on paper only.
 
-- [ ] **Close the `shellmcp` confirmation gap (Project-JARVIS #159)**
-  Force-confirm privileged / `scope: system` tools at the host level regardless of the manifest's `confirmation_required` flag, so a tool author cannot opt a dangerous tool out of gating.
+- [x] **Close the `shellmcp` confirmation gap (Project-JARVIS #159, #162 — closed)**
+  The host floor in `jarvis/core/threat_level.py` now force-confirms command-execution tools and dangerous payloads regardless of the manifest's `confirmation_required` flag, so a tool author cannot opt a dangerous tool out of gating.
 
 - [ ] **File operation guardrails in `jarvis_policy.c`**
   Currently only obvious destructive patterns (`rm -rf /`, `dd`) hit FORBIDDEN. Add path-based rules — writes to `/etc`, `/usr`, `/boot`, kernel module directories — as DANGEROUS-tier minimum.
@@ -66,15 +65,15 @@ Full asset table, attacker profiles, and the OpenClaw CVE-by-CVE comparison (JAR
 
 - [ ] **Log rotation, credential redaction, and append-only audit log** for `/var/log/jarvis/`.
 
-- [ ] **Formal `THREAT_MODEL.md`** consolidating the kernel/daemon/MCP/LLM attack surface and the full trust boundary diagram (LLM → dispatch → dmcp → TLA gate → kernel policy → CAP enforcement → LSM), marking where each of the 7 threats is actually intercepted today.
+- [ ] **Formal `THREAT_MODEL.md`** consolidating the kernel/daemon/MCP/LLM attack surface and the full trust boundary diagram (LLM → dispatch → dmcp → TLA gate → kernel policy → CAP enforcement → LSM), marking where each of the six threats is actually intercepted today.
 
 ---
 
 **The world's first operating system with a custom AI-integrated kernel.**
 
-JARVIS OS is a custom Linux distribution built on a CachyOS/Arch base where an AI assistant handles system administration, file management, and hardware control through natural language — voice or text. The kernel itself speaks to the AI through a dedicated character device (`/dev/jarvis`), making the AI a first-class OS citizen rather than a userspace afterthought.
+JARVIS OS is a custom Linux distribution built on an Arch Linux base where an AI assistant handles system administration, file management, and hardware control through natural language — voice or text. The kernel itself speaks to the AI through a dedicated character device (`/dev/jarvis`), making the AI a first-class OS citizen rather than a userspace afterthought.
 
-> **Status**: Work in progress. The custom kernel (`linux-jarvisos`), JARVIS driver, and agent runtime are functional. The full ISO build pipeline builds successfully; live-boot testing and the Calamares installer are still being refined.
+> **Status**: Work in progress. The custom kernel (`linux-jarvisos`), JARVIS driver, and agent runtime are functional. The full ISO build pipeline builds successfully; live-boot testing and the `jarvis-install` TUI installer are still being refined.
 
 ---
 
@@ -109,24 +108,28 @@ jarvisos/
 │   ├── linux-jarvisos/           # Arch PKGBUILD for the custom kernel
 │   │   ├── PKGBUILD              # Produces linux-jarvisos + linux-jarvisos-headers
 │   │   └── linux-jarvisos.install
-│   └── calamares-config/         # Calamares installer branding + configuration
+│   └── calamares-config/         # Legacy Calamares config — not used by the build anymore
 ├── Project-JARVIS/               # JARVIS daemon + tooling (cloned by fetch-sources.sh)
-├── scripts/                      # ISO build pipeline
-│   ├── build.config              # Build paths and ISO filename
+├── iso-build-scripts/            # ISO build pipeline (run make from the repo root, see below)
+│   ├── build.config.example      # Copy to ../build.config (repo root) and set PROJECT_ROOT
 │   ├── Makefile                  # Orchestrates all build steps
+│   ├── fetch-sources.sh          # Clones the sibling repos in sources.conf at the versions.lock commits
 │   ├── 00-install-prereq.sh      # Install host build tools (Arch/Fedora/Ubuntu/openSUSE)
-│   ├── 01-extract-iso.sh         # Extract base CachyOS ISO
+│   ├── 01-extract-iso.sh         # Extract the base Arch Linux ISO
 │   ├── 02-unsquash-fs.sh         # Extract SquashFS rootfs
 │   ├── 03-bake-wayland.sh        # Install KDE Plasma Wayland + all system packages
 │   ├── 03b-build-kernel.sh       # Build linux-jarvisos packages and install into rootfs
 │   ├── 04-bake-jarvis.sh         # Install Project-JARVIS daemon
-│   ├── 05-bake-calamares.sh      # Install Calamares installer
+│   ├── 05-bake-installer.sh      # Install the jarvis-install TUI installer (auto-launches on TTY1)
 │   ├── 06-squash-fs.sh           # Repack SquashFS
 │   ├── 07-rebuild-iso.sh         # Assemble final bootable ISO
-│   └── booter.sh                 # QEMU launcher for local testing
+│   ├── booter.sh                 # QEMU launcher for local testing
+│   └── tasks/                    # Install steps that jarvis-install runs
+├── build.config                  # Your build config (copied from build.config.example; gitignored)
+├── jarvis-install.sh             # TUI installer (bash + dialog); baked into the ISO as /usr/local/bin/jarvis-install
 ├── jarvis_agent.py               # Standalone JARVIS agent runtime (voice + text → llama-server → shell)
 ├── test-jarvis.sh                # Bootstrap launcher for the standalone agent
-├── build-deps/                   # Place your CachyOS source ISO here
+├── build-deps/                   # Place the Arch Linux source ISO here (archlinux-x86_64.iso)
 └── build/                        # All build artifacts land here (gitignored)
 ```
 
@@ -186,44 +189,62 @@ sudo pacman -S ccache
 ### Fetch the kernel source
 
 ```bash
-git clone --recursive https://github.com/YourUsername/jarvisos.git
+git clone https://github.com/JarvisOSLinux/jarvisos.git
 cd jarvisos
 
-# If already cloned without --recursive:
+# The sibling repos are plain clones, not submodules. This clones linux-jarvisos/
+# (the build scripts also run it on demand when the source is missing):
 bash iso-build-scripts/fetch-sources.sh linux-jarvisos
 ```
 
-The `linux-jarvisos/` clone tracks the `jarvisos-7.0-stable` branch, which is the upstream 7.0.2 kernel tree plus the JARVIS driver tree under `drivers/jarvis/`.
+`fetch-sources.sh` clones `linux-jarvisos/` from the branch named in `sources.conf` (`stable`) and checks out the commit pinned in `versions.lock` (`JARVIS_SOURCES_FLOAT=1` takes the branch head instead). The tree is the upstream 7.0.2 kernel plus the JARVIS driver tree under `drivers/jarvis/`.
 
 ### Build modes
+
+`03b-build-kernel.sh` sources `./build.config`, so run it **from the repo root** after creating the config (see [Step 0](#step-0--get-the-source-iso-and-create-buildconfig) of the ISO build; `PROJECT_ROOT` must be set to your checkout's absolute path):
+
+```bash
+cp iso-build-scripts/build.config.example build.config
+# then edit build.config: PROJECT_ROOT="/absolute/path/to/jarvisos"
+```
 
 #### Option A — Build and install on your running system (for development / daily use)
 
 This is the fastest way to run the JARVIS kernel on your own machine. The script builds the packages on the host and installs them with `pacman`:
 
 ```bash
-cd scripts
-bash 03b-build-kernel.sh --host-install
+bash iso-build-scripts/03b-build-kernel.sh --host-install
 ```
 
 After install, reboot and select **linux-jarvisos** from your bootloader (GRUB or systemd-boot). The GRUB entry is added automatically by the `linux-jarvisos.install` hook.
 
 **Build time**: 20–60 min on first run. Subsequent runs with ccache take 2–5 min.
 
-#### Option B — Build packages only (ISO pipeline or manual inspection)
+#### Option B — Build packages only (manual inspection)
+
+The repo-root `build-kernel.sh` builds the packages without touching any rootfs and does not need `build.config`:
 
 ```bash
-cd scripts
-bash 03b-build-kernel.sh
-# Packages land in build/kernel-pkg/
+./build-kernel.sh
+# Packages land in kernel-pkg/
 # linux-jarvisos-*.pkg.tar.zst
 # linux-jarvisos-headers-*.pkg.tar.zst
+```
+
+`./build-kernel.sh --install` builds and installs on the host instead.
+
+#### Option C — ISO pipeline mode (what `make step3b` runs)
+
+Without `--host-install`, `03b-build-kernel.sh` needs the step 2/3 rootfs in `build/iso-rootfs/`. It builds the packages into `build/kernel-pkg/` and installs them into that rootfs:
+
+```bash
+bash iso-build-scripts/03b-build-kernel.sh
 ```
 
 #### Skip recompilation when packages are already built
 
 ```bash
-SKIP_KERNEL_BUILD=1 bash 03b-build-kernel.sh --host-install
+SKIP_KERNEL_BUILD=1 bash iso-build-scripts/03b-build-kernel.sh --host-install
 ```
 
 ### What gets built
@@ -469,7 +490,7 @@ The systemd unit sets `JARVIS_CONFIG_DIR=/etc/jarvis` via `Environment=`. The `/
 
 ## Building the JarvisOS ISO
 
-> **Work in progress.** The build pipeline runs end-to-end, but live-boot reliability and the Calamares installer are still being stabilized. Expect rough edges.
+> **Work in progress.** The build pipeline runs end-to-end, but live-boot reliability and the `jarvis-install` TUI installer are still being stabilized. Expect rough edges.
 
 ### Requirements
 
@@ -477,68 +498,74 @@ The systemd unit sets `JARVIS_CONFIG_DIR=/etc/jarvis` via `Environment=`. The `/
 - 16 GB+ RAM
 - 60 GB+ free disk space
 - Internet connection (packages are downloaded during build)
-- A CachyOS desktop ISO placed in `build-deps/`
+- The official Arch Linux ISO placed in `build-deps/`
 
-### Step 0 — Get the source ISO
+### Step 0 — Get the source ISO and create build.config
 
-Download the CachyOS desktop ISO and place it in `build-deps/`:
+Download the official Arch Linux ISO and place it in `build-deps/`:
 
 ```
-build-deps/cachyos-desktop-linux-260308.iso
+build-deps/archlinux-x86_64.iso
 ```
 
-Update `scripts/build.config` if your filename differs:
+The Makefile reads `build.config` from the **repo root**, not from `iso-build-scripts/`. Create it from the example:
 
 ```bash
-ISO_FILE="cachyos-desktop-linux-260308.iso"
+cp iso-build-scripts/build.config.example build.config
+```
+
+Then edit `build.config`. Set `PROJECT_ROOT` to the absolute path of your checkout: the example's auto-detected value resolves one directory too high once the file sits at the repo root. Update `ISO_FILE` if your filename differs:
+
+```bash
+ISO_FILE="archlinux-x86_64.iso"
 PROJECT_ROOT="/absolute/path/to/jarvisos"
 ```
 
 ### Step 1 — Install host build tools
 
+Every `make` command in this section runs **from the repo root**. Each step script sources `./build.config` from the current directory, so `cd iso-build-scripts && make …` fails at step 1.
+
 ```bash
-cd scripts
-sudo bash 00-install-prereq.sh
+make -f iso-build-scripts/Makefile prereq
 ```
 
-This detects your host distro (Arch/Fedora/Ubuntu/openSUSE) and installs `arch-install-scripts`, `squashfs-tools`, `xorriso`, `p7zip`, `dosfstools`, `fakeroot`, `git`, `curl`, and `python3`.
+This runs `00-install-prereq.sh`, which calls `sudo` itself. It detects your host distro (Arch, Fedora/RHEL, Ubuntu/Debian, or openSUSE — the kernel step still needs an Arch-based host) and installs the ISO tooling (`arch-install-scripts`, `squashfs-tools`, `xorriso`, `p7zip`, `dosfstools`, `fakeroot`, `libarchive`, `unzip`), `git`, `curl`, `wget`, `python3`, `dialog`, the kernel build dependencies (`base-devel`, `bc`, `flex`, `bison`, `openssl`, `libelf`, `pahole`), Rust/`cargo` for the `dmcp` and `dispatch` builds in step 4, and QEMU for boot testing.
 
 ### Step 2 — Run the full build
 
 ```bash
-cd scripts
-
 # Build everything in sequence
-make all
+make -f iso-build-scripts/Makefile all
 ```
 
 Or run steps individually when debugging:
 
 ```bash
-make step1    # Extract CachyOS ISO
-make step2    # Unsquash rootfs → build/iso-rootfs/
-make step3    # Install KDE Plasma Wayland + all system packages into rootfs
-make step3b   # Build linux-jarvisos kernel + install into rootfs
-make step4    # Install Project-JARVIS daemon
-make step5    # Install Calamares installer
-make step6    # Repack rootfs into SquashFS
-make step7    # Assemble final bootable ISO → build/jarvisos-YYYYMMDD-x86_64.iso
+make -f iso-build-scripts/Makefile step1    # Extract the Arch Linux ISO
+make -f iso-build-scripts/Makefile step2    # Unsquash rootfs → build/iso-rootfs/
+make -f iso-build-scripts/Makefile step3    # Install KDE Plasma Wayland + all system packages into rootfs
+make -f iso-build-scripts/Makefile step3b   # Build linux-jarvisos kernel + install into rootfs
+make -f iso-build-scripts/Makefile step4    # Install Project-JARVIS daemon
+make -f iso-build-scripts/Makefile step5    # Install the jarvis-install TUI installer (auto-launches on TTY1)
+make -f iso-build-scripts/Makefile step6    # Repack rootfs into SquashFS
+make -f iso-build-scripts/Makefile step7    # Assemble final bootable ISO → build/jarvisos-YYYYMMDD-x86_64.iso
 
-make status   # Show which steps are complete
-make clean    # Remove all build artifacts
+make -f iso-build-scripts/Makefile rest     # Resume an interrupted build (skips completed steps)
+make -f iso-build-scripts/Makefile status   # Show which steps are complete
+make -f iso-build-scripts/Makefile clean    # Remove build/iso-extract/ and build/iso-rootfs/ (kernel packages and the final ISO are kept)
 ```
+
+Pass `JOBS=N` to set the parallelism for the kernel build and the SquashFS repack (default: `nproc`), e.g. `make -f iso-build-scripts/Makefile JOBS=8 step3b`.
 
 **Estimated total time**: 60–120 min depending on CPU and network (kernel compilation is the bottleneck).
 
 ### Step 3 — Test in QEMU
 
 ```bash
-# Boot with UEFI (recommended)
-./scripts/booter.sh
-
-# Or boot with BIOS
-./scripts/booter.sh --bios
+./iso-build-scripts/booter.sh
 ```
+
+Run it from the repo root (it also sources `./build.config`). It takes no flags: it boots UEFI when OVMF firmware (`edk2-ovmf`) is installed and falls back to legacy BIOS otherwise.
 
 ### Step 4 — Write to USB
 
@@ -546,7 +573,7 @@ make clean    # Remove all build artifacts
 sudo dd if=build/jarvisos-*-x86_64.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-Boot from USB and use the Calamares installer on the desktop.
+Boot from USB. The live image logs root in on TTY1 and launches the `jarvis-install` TUI installer (bash + `dialog`); no display manager runs on the live image. The installer enables SDDM and KDE Plasma on the installed system.
 
 ### What each script does
 
@@ -554,25 +581,25 @@ Boot from USB and use the Calamares installer on the desktop.
 Detects the host distro and installs all build tooling. Supports Arch, Fedora, Ubuntu, and openSUSE.
 
 #### `01-extract-iso.sh`
-Mounts the CachyOS source ISO and copies its contents into `build/iso-extract/`.
+Extracts the Arch Linux source ISO with `7z` into `build/iso-extract/`.
 
 #### `02-unsquash-fs.sh`
 Extracts the SquashFS rootfs into `build/iso-rootfs/` for modification via `arch-chroot`.
 
 #### `03-bake-wayland.sh`
-Heavy lifting: installs KDE Plasma Wayland, PipeWire audio, NetworkManager (wpa_supplicant backend), input drivers, comprehensive hardware firmware, creates the `liveuser` account with passwordless sudo, configures SDDM autologin, and sets up all systemd services needed for a working live desktop.
+Heavy lifting: installs KDE Plasma Wayland, PipeWire audio, NetworkManager (wpa_supplicant backend), input drivers, comprehensive hardware firmware, creates the `liveuser` account with passwordless sudo, writes the default SDDM Wayland config, and sets up the systemd services the system needs. SDDM is not enabled on the live image (the TUI installer runs on TTY1 instead) and gets no autologin; the installer enables it on the installed system.
 
 #### `03b-build-kernel.sh`
 Builds the `linux-jarvisos` and `linux-jarvisos-headers` packages using `makepkg` on the host, then installs them into the rootfs via `pacman -U` in the chroot and regenerates the initramfs with the archiso/memdisk hooks. Backs up `vmlinuz-linux-jarvisos` and its initramfs to `build/kernel-files/` for step 7.
 
 #### `04-bake-jarvis.sh`
-Copies `Project-JARVIS` into the rootfs, creates the Python venv, installs llama.cpp, sets up the `jarvis.service` systemd unit, and places the CLI wrappers.
+Copies `Project-JARVIS` into the rootfs, creates the Python venv, installs llama.cpp (`llama-cpp` + Vulkan backend), builds the `dmcp` and `dispatch` binaries, sets up the `jarvis.service` systemd unit, and places the CLI wrappers. Models are not baked in; they download on first boot via `jarvis-setup.service`.
 
-#### `05-bake-calamares.sh`
-Installs Calamares and applies the JARVIS OS branding, partitioning, and post-install configuration.
+#### `05-bake-installer.sh`
+Installs the `jarvis-install` TUI installer (the repo-root `jarvis-install.sh`, bash + `dialog`) as `/usr/local/bin/jarvis-install`, with its task scripts in `/usr/share/jarvis-install/tasks/`. Configures TTY1 root auto-login so the installer launches on boot, and stages the `linux-jarvisos` packages from step 3b so the installer can put the custom kernel on the target system (it falls back to the stock `linux` kernel when they are missing).
 
 #### `06-squash-fs.sh`
-Repacks `build/iso-rootfs/` back into a SquashFS image with `zstd` compression. Removes the build-time `resolv.conf` and replaces it with a symlink to `systemd-resolved`'s stub.
+Repacks `build/iso-rootfs/` back into a SquashFS image with `xz` compression. Removes the build-time `resolv.conf` and replaces it with a symlink to `systemd-resolved`'s stub.
 
 #### `07-rebuild-iso.sh`
 Assembles the final ISO using `xorriso`. Dynamically sizes `efiboot.img` to fit the UEFI files, copies `vmlinuz-linux-jarvisos` and its initramfs from `build/kernel-files/`, and updates the syslinux/GRUB bootloader entries. The EFI image is always deleted and recreated to prevent silent ENOSPC truncation.
@@ -589,14 +616,15 @@ Assembles the final ISO using `xorriso`. Dynamically sizes `efiboot.img` to fit 
 | Policy sysfs (`/sys/class/misc/jarvis/policy/`) | Working | Shows all loaded rules |
 | Standalone JARVIS agent (`test-jarvis.sh`) | Working | Voice + text, llama.cpp, full policy enforcement |
 | ISO build pipeline | Working | Full build completes without errors |
-| Live boot (BIOS) | Working | Boots to KDE Plasma desktop |
+| Live boot (BIOS) | Working | Boots to the `jarvis-install` TUI on TTY1 (KDE Plasma runs on the installed system) |
 | Live boot (UEFI) | Working | efiboot.img dynamically sized; EFI stub enforced |
 | WiFi on live boot | Working | NetworkManager + wpa_supplicant backend |
 | Audio on live boot | Working | PipeWire with rtkit-daemon, per-user service symlinks |
 | Touchpad on live boot | Working | libinput + psmouse/i2c_hid modules |
 | JARVIS TUI (`jarvis tui`) | Working | Requires `textual` in `/opt/jarvis-env`; install with `sudo /opt/jarvis-env/bin/pip install textual` |
 | Kernel module autoload at boot | Working | `/etc/modules-load.d/jarvis.conf` → `jarvis`; `dibs` dep resolved automatically |
-| Calamares installer | In progress | Installs but post-install configuration needs work |
+| `jarvis-install` TUI installer | In progress | Installs, but post-install JARVIS configuration needs work |
+| Calamares graphical installer | Discontinued | Removed from the build; `packages/calamares-config/` is unused |
 | JARVIS daemon on installed system | In progress | Service boots; model selection needs tuning |
 
 ---
@@ -615,7 +643,7 @@ sudo pacman -S base-devel
 ```bash
 # Remove stale .config so PKGBUILD rebuilds from /proc/config.gz
 rm linux-jarvisos/.config
-bash scripts/03b-build-kernel.sh --host-install
+bash iso-build-scripts/03b-build-kernel.sh --host-install
 ```
 
 **Kernel source is missing**
@@ -625,10 +653,19 @@ bash iso-build-scripts/fetch-sources.sh linux-jarvisos
 
 ### ISO build
 
+**`build.config: No such file or directory`** or **`build.config not found at …`**
+```bash
+# build.config must sit at the repo root, and make/booter.sh must run from there
+cp iso-build-scripts/build.config.example build.config   # then set PROJECT_ROOT
+make -f iso-build-scripts/Makefile status
+```
+
 **`ISO file not found`**
 ```bash
 ls build-deps/
-# Ensure cachyos-desktop-linux-260308.iso is present, or update ISO_FILE in scripts/build.config
+# Ensure archlinux-x86_64.iso is present, or update ISO_FILE in build.config (repo root).
+# If the error path is outside your checkout, PROJECT_ROOT in build.config is wrong:
+# set it to the checkout's absolute path.
 ```
 
 **`arch-chroot: command not found`**
@@ -639,11 +676,11 @@ sudo pacman -S arch-install-scripts
 **`No space left on device` during squashfs**
 ```bash
 df -h
-make clean   # Clears build/ to reclaim space
+make -f iso-build-scripts/Makefile clean   # Removes build/iso-extract/ and build/iso-rootfs/
 ```
 
 **UEFI boots to black screen / "Unsupported"**
-The `07-rebuild-iso.sh` script dynamically sizes efiboot.img and enforces `CONFIG_EFI_STUB=y` in the kernel config. If you are hitting this on an old build, rebuild from step 7: `make step7`.
+`07-rebuild-iso.sh` recreates `efiboot.img` at the size the UEFI files need, and `packages/linux-jarvisos/PKGBUILD` enforces `CONFIG_EFI_STUB=y` in the kernel config. If you are hitting this on an old build, rebuild from step 7: `make -f iso-build-scripts/Makefile step7`.
 
 ### JARVIS agent
 
@@ -727,7 +764,7 @@ uname -r    # Must contain "jarvisos"
 If not, select `linux-jarvisos` from your bootloader and reboot. If it does not appear, rebuild and reinstall the kernel:
 
 ```bash
-bash scripts/03b-build-kernel.sh --host-install
+bash iso-build-scripts/03b-build-kernel.sh --host-install
 ```
 
 ---
@@ -758,12 +795,12 @@ See the full table in the [Developer Setup](#developer-setup-on-an-installed-jar
 ## Contributing
 
 1. Fork the repo and create a feature branch
-2. Test your changes with `make all` and boot the ISO in QEMU
-3. For kernel changes: rebuild with `bash scripts/03b-build-kernel.sh --host-install` and verify `uname -r` and `/dev/jarvis`
+2. Test your changes with `make -f iso-build-scripts/Makefile all` (from the repo root) and boot the ISO in QEMU
+3. For kernel changes: rebuild with `bash iso-build-scripts/03b-build-kernel.sh --host-install` and verify `uname -r` and `/dev/jarvis`
 4. Submit a PR with a description of what changed and how you tested it
 
 Areas that need work:
-- Calamares post-install script (sets up linux-jarvisos as the installed bootloader entry)
+- `jarvis-install` post-install configuration (`jarvis-install.sh`, `iso-build-scripts/tasks/`)
 - JARVIS daemon auto-startup and model selection on first boot
 - Kernel → daemon query path (the `jarvis_post_query` / `JARVIS_IOC_RESPOND` round-trip)
 - Voice TTS output (Piper integration)
