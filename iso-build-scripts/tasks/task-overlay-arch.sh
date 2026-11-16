@@ -521,8 +521,11 @@ JARVISSVC
 
 install_jarvis_first_boot
 
-cat > /usr/local/bin/jarvis-welcome.sh << 'WELCOMEEOF'
-#!/bin/bash
+{
+    echo '#!/bin/bash'
+    declare -p JARVIS_DEFAULT_MODEL JARVIS_MODEL_MENU
+    declare -f as_jarvis jarvis_configured_model
+    cat << 'WELCOMEEOF'
 MARKER="${HOME}/.config/jarvis-welcome-done"
 BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 RED='\033[0;31m'; NC='\033[0m'
@@ -534,8 +537,6 @@ echo -e "${BOLD}${CYAN}  ║              Welcome to JARVIS OS                  
 echo -e "${BOLD}${CYAN}  ║           AI-Native Linux Distribution             ║${NC}"
 echo -e "${BOLD}${CYAN}  ╚════════════════════════════════════════════════════╝${NC}"
 echo ""
-JENV="JARVIS_CONFIG_DIR=/etc/jarvis JARVIS_DATA_DIR=/var/lib/jarvis JARVIS_MODELS_DIR=/var/lib/jarvis/models"
-jarvis_as_service() { sudo -u jarvis env ${JENV} /usr/bin/jarvis "$@"; }
 echo -e "  Checking local AI engine..."
 if ! command -v llama-server >/dev/null 2>&1; then
     echo -e "  ${YELLOW}⚠ llama-server missing, installing llama-cpp...${NC}"
@@ -550,14 +551,12 @@ else
     exit 1
 fi
 echo ""
-CURRENT_MODEL=$(python3 -c 'import json
-p = json.load(open("/etc/jarvis/providers.json"))["providers"]
-print(next((x["model"] for x in p if x.get("type") == "llamacpp"), ""))' 2>/dev/null)
-[ -z "${CURRENT_MODEL}" ] && CURRENT_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
+CURRENT_MODEL=$(jarvis_configured_model)
+[ -z "${CURRENT_MODEL}" ] && CURRENT_MODEL="${JARVIS_DEFAULT_MODEL}"
 model_pulled() {
     local repo="${1%%:*}" quant="Q4_K_M"
     [[ "$1" == *:* ]] && quant="${1#*:}"
-    jarvis_as_service model list 2>/dev/null | grep -i "${repo}/" | grep -qi "${quant}"
+    as_jarvis model list 2>/dev/null | grep -i "${repo}/" | grep -qi "${quant}"
 }
 MODEL_READY=false
 model_pulled "${CURRENT_MODEL}" && MODEL_READY=true
@@ -573,13 +572,9 @@ if command -v dialog >/dev/null 2>&1; then
     MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
         --title "AI Model Selection" \
         --menu "Select AI model (current: ${CURRENT_MODEL}):" 20 78 7 \
-        "keep"                                         "Keep current: ${CURRENT_MODEL}" \
-        "Qwen/Qwen3-4B-GGUF:Q4_K_M"                    "Qwen3 4B     — recommended  (~2.6 GB)" \
-        "Qwen/Qwen3-8B-GGUF:Q4_K_M"                    "Qwen3 8B     — better quality (~5.2 GB)" \
-        "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"  "Llama 3.2 3B — lightweight  (~2.0 GB)" \
-        "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M" "Llama 3.1 8B — high quality (~4.9 GB)" \
-        "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"           "Gemma 3 4B   — Google model (~3.3 GB)" \
-        "custom"                                       "Enter a Hugging Face GGUF reference" \
+        "keep"   "Keep current: ${CURRENT_MODEL}" \
+        "${JARVIS_MODEL_MENU[@]}" \
+        "custom" "Enter a Hugging Face GGUF reference" \
         3>&1 1>&2 2>&3) || MODEL_CHOICE="keep"
     if [ "${MODEL_CHOICE:-}" = "custom" ]; then
         MODEL_CHOICE=$(dialog --clear --backtitle "JARVIS OS Setup" \
@@ -596,9 +591,9 @@ if [ "${MODEL_CHOICE}" != "keep" ] && [ -n "${MODEL_CHOICE}" ] \
         && [ "${MODEL_CHOICE}" != "${CURRENT_MODEL}" ]; then
     echo -e "  Switching model to: ${MODEL_CHOICE}"
     if [ -f /etc/jarvis/providers.json ]; then
-        jarvis_as_service providers edit local --model "${MODEL_CHOICE}" || true
+        as_jarvis providers edit local --model "${MODEL_CHOICE}" || true
     else
-        jarvis_as_service providers add --type llamacpp --name local --model "${MODEL_CHOICE}" || true
+        as_jarvis providers add --type llamacpp --name local --model "${MODEL_CHOICE}" || true
     fi
     CURRENT_MODEL="${MODEL_CHOICE}"
     MODEL_READY=false
@@ -609,7 +604,7 @@ if ! $MODEL_READY; then
     echo -e "  Pulling AI model: ${BOLD}${CURRENT_MODEL}${NC}"
     echo -e "  This may take several minutes depending on your connection..."
     echo ""
-    if jarvis_as_service model pull "${CURRENT_MODEL}"; then
+    if as_jarvis model pull "${CURRENT_MODEL}"; then
         echo ""
         echo -e "  ${GREEN}✓ Model downloaded: ${CURRENT_MODEL}${NC}"
         MODEL_READY=true
@@ -644,6 +639,7 @@ read -r
 mkdir -p "$(dirname "$MARKER")"
 touch "$MARKER"
 WELCOMEEOF
+} > /usr/local/bin/jarvis-welcome.sh
 chmod 755 /usr/local/bin/jarvis-welcome.sh
 ok "Systemd service units installed"
 

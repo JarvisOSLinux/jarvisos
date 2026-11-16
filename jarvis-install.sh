@@ -23,6 +23,31 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; BOLD='\033[1m'; CYAN='\033[0;36m'; NC='\033[0m'
 
+# ── Locate task scripts ────────────────────────────────────────────────────
+_find_tasks_dir() {
+    local _self_dir; _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Pre-seeded in chroot by task-base-install.sh
+    [ -d "/tmp/jarvis-tasks" ] && echo "/tmp/jarvis-tasks" && return 0
+    # Installed on live ISO by 05-bake-installer.sh
+    [ -d "/usr/share/jarvis-install/tasks" ] && echo "/usr/share/jarvis-install/tasks" && return 0
+    # Repo layout (developer / host-install context)
+    for _d in \
+        "${_self_dir}/iso-build-scripts/tasks" \
+        "${_self_dir}/../iso-build-scripts/tasks" \
+        "${_self_dir}/../../iso-build-scripts/tasks"; do
+        [ -d "${_d}" ] && echo "$(realpath "${_d}")" && return 0
+    done
+    return 1
+}
+
+TASKS_DIR=""
+TASKS_DIR=$(_find_tasks_dir || true)
+
+# Shared model default, menu and RAM table. Sourced before the helpers
+# below so this script's own die/ok/warn/need_root stay in effect.
+# shellcheck source=iso-build-scripts/tasks/lib.sh
+[ -z "${TASKS_DIR}" ] || source "${TASKS_DIR}/lib.sh"
+
 # ── State variables ────────────────────────────────────────────────────────
 TARGET_DISK=""
 BOOT_LOADER=""   # "grub" or "systemd-boot"
@@ -38,8 +63,7 @@ ROOT_PASS=""
 IS_EFI=false
 MOUNT_ROOT="/mnt/jarvis-install"
 PARTITION_MODE=""        # "auto" or "manual"
-JARVIS_DEFAULT_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-JARVIS_MODEL="${JARVIS_DEFAULT_MODEL}"
+JARVIS_MODEL=""
 KERNEL_PKG="linux"
 declare -A PART_MOUNT=()
 declare -A PART_FS=()
@@ -89,26 +113,6 @@ cleanup_mounts() {
     umount -R "${MOUNT_ROOT}" 2>/dev/null || true
     swapoff -a 2>/dev/null || true
 }
-
-# ── Locate task scripts ────────────────────────────────────────────────────
-_find_tasks_dir() {
-    local _self_dir; _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    # Pre-seeded in chroot by task-base-install.sh
-    [ -d "/tmp/jarvis-tasks" ] && echo "/tmp/jarvis-tasks" && return 0
-    # Installed on live ISO by 05-bake-installer.sh
-    [ -d "/usr/share/jarvis-install/tasks" ] && echo "/usr/share/jarvis-install/tasks" && return 0
-    # Repo layout (developer / host-install context)
-    for _d in \
-        "${_self_dir}/iso-build-scripts/tasks" \
-        "${_self_dir}/../iso-build-scripts/tasks" \
-        "${_self_dir}/../../iso-build-scripts/tasks"; do
-        [ -d "${_d}" ] && echo "$(realpath "${_d}")" && return 0
-    done
-    return 1
-}
-
-TASKS_DIR=""
-TASKS_DIR=$(_find_tasks_dir || true)
 
 # ── Task runner ────────────────────────────────────────────────────────────
 # Runs a task script from TASKS_DIR with live dialog output.
@@ -463,30 +467,14 @@ step_ai_model() {
     local ram_mb rec_model
     ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)
     local ram_gb=$(( ram_mb / 1024 ))
+    rec_model=$(jarvis_recommended_model "${ram_mb}")
 
-    local m_q4b="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-    local m_q8b="Qwen/Qwen3-8B-GGUF:Q4_K_M"
-    local m_l3b="bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"
-    local m_l8b="bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M"
-    local m_g4b="ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"
-
-    if   [ "${ram_mb}" -ge 16000 ]; then rec_model="${m_l8b}"
-    elif [ "${ram_mb}" -ge  8000 ]; then rec_model="${m_q8b}"
-    elif [ "${ram_mb}" -ge  4000 ]; then rec_model="${m_q4b}"
-    else                                 rec_model="${m_l3b}"
-    fi
-
-    local _q4b="Qwen3 4B     — balanced quality  (~2.6 GB)"
-    local _q8b="Qwen3 8B     — better quality    (~5.2 GB)"
-    local _l3b="Llama 3.2 3B — lightweight       (~2.0 GB)"
-    local _l8b="Llama 3.1 8B — high quality      (~4.9 GB)"
-    local _g4b="Gemma 3 4B   — Google model      (~3.3 GB)"
-    case "${rec_model}" in
-        "${m_q4b}") _q4b="${_q4b} ★" ;;
-        "${m_q8b}") _q8b="${_q8b} ★" ;;
-        "${m_l3b}") _l3b="${_l3b} ★" ;;
-        "${m_l8b}") _l8b="${_l8b} ★" ;;
-    esac
+    local i label items=()
+    for (( i = 0; i < ${#JARVIS_MODEL_MENU[@]}; i += 2 )); do
+        label="${JARVIS_MODEL_MENU[i+1]}"
+        [ "${JARVIS_MODEL_MENU[i]}" = "${rec_model}" ] && label+=" ★"
+        items+=("${JARVIS_MODEL_MENU[i]}" "${label}")
+    done
 
     local choice
     choice=$(dialog --clear --backtitle "JARVIS OS Installer" \
@@ -494,11 +482,7 @@ step_ai_model() {
         --default-item "${rec_model}" \
         --menu "Select AI model to install  (System RAM: ${ram_gb} GB — ★ = recommended)" \
         22 72 6 \
-        "${m_q4b}" "${_q4b}" \
-        "${m_q8b}" "${_q8b}" \
-        "${m_l3b}" "${_l3b}" \
-        "${m_l8b}" "${_l8b}" \
-        "${m_g4b}" "${_g4b}" \
+        "${items[@]}" \
         "none"     "None — skip model download (configure after first boot)" \
         3>&1 1>&2 2>&3) || choice="${rec_model}"
 

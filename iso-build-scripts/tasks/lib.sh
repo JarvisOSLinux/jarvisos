@@ -72,6 +72,39 @@ require_env() {
 # Models are Hugging Face GGUF references: user/repo[:quant]
 JARVIS_DEFAULT_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
 
+# Model menu offered by the installer and the welcome script: id, label pairs
+JARVIS_MODEL_MENU=(
+    "${JARVIS_DEFAULT_MODEL}"                          "Qwen3 4B     — balanced quality  (~2.6 GB)"
+    "Qwen/Qwen3-8B-GGUF:Q4_K_M"                        "Qwen3 8B     — better quality    (~5.2 GB)"
+    "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"      "Llama 3.2 3B — lightweight       (~2.0 GB)"
+    "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M" "Llama 3.1 8B — high quality      (~4.9 GB)"
+    "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M"               "Gemma 3 4B   — Google model      (~3.3 GB)"
+)
+
+# Model to recommend for this much RAM in MiB (default: this machine's MemTotal)
+jarvis_recommended_model() {
+    local ram_mb="${1:-$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)}"
+    if   [ "${ram_mb}" -ge 16000 ]; then echo "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M"
+    elif [ "${ram_mb}" -ge  8000 ]; then echo "Qwen/Qwen3-8B-GGUF:Q4_K_M"
+    elif [ "${ram_mb}" -ge  4000 ]; then echo "${JARVIS_DEFAULT_MODEL}"
+    else                                 echo "bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M"
+    fi
+}
+
+# Model of the first llama.cpp provider in /etc/jarvis/providers.json, or nothing.
+# The generated first-boot and welcome scripts embed it with declare -f.
+jarvis_configured_model() {
+    python3 -c 'import json
+p = json.load(open("/etc/jarvis/providers.json"))["providers"]
+print(next((x["model"] for x in p if x.get("type") == "llamacpp"), ""))' 2>/dev/null || true
+}
+
+# Run the jarvis CLI as the service user (embedded in the welcome scripts)
+as_jarvis() {
+    sudo -u jarvis env JARVIS_CONFIG_DIR=/etc/jarvis JARVIS_DATA_DIR=/var/lib/jarvis \
+        JARVIS_MODELS_DIR=/var/lib/jarvis/models /usr/bin/jarvis "$@"
+}
+
 # Keep only characters valid in a model reference
 sanitize_model() { tr -cd '[:alnum:]:./_-' | head -c 128; }
 
@@ -115,8 +148,10 @@ StandardError=journal
 WantedBy=multi-user.target
 SETUPSVC
 
-    cat > /usr/local/bin/jarvis-first-boot.sh << 'FIRSTBOOT'
-#!/bin/bash
+    {
+        echo '#!/bin/bash'
+        declare -f jarvis_configured_model
+        cat << 'FIRSTBOOT'
 MARKER="/var/lib/jarvis/.setup-done"
 LOG="/var/log/jarvis/first-boot.log"
 mkdir -p /var/log/jarvis
@@ -124,9 +159,7 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== JARVIS first-boot $(date) ==="
 [ -f "$MARKER" ] && echo "Already done." && exit 0
 
-MODEL=$(python3 -c 'import json
-p = json.load(open("/etc/jarvis/providers.json"))["providers"]
-print(next((x["model"] for x in p if x.get("type") == "llamacpp"), ""))' 2>/dev/null || true)
+MODEL=$(jarvis_configured_model)
 EMBED=$(grep -E '^EMBED_MODEL=' /usr/lib/jarvis/.env 2>/dev/null | cut -d= -f2- || true)
 [ -z "$EMBED" ] && EMBED="nomic-ai/nomic-embed-text-v1.5-GGUF:Q8_0"
 
@@ -138,6 +171,7 @@ done
 touch "$MARKER"
 echo "First-boot complete."
 FIRSTBOOT
+    } > /usr/local/bin/jarvis-first-boot.sh
     chmod 755 /usr/local/bin/jarvis-first-boot.sh
 }
 
@@ -172,19 +206,19 @@ install_llama_cpp_arch() {
 # CPU build from source into /usr/local (llama-server only).
 # Usage: install_llama_cpp_generic apt|dnf
 install_llama_cpp_generic() {
-    local mgr="$1"
+    local mgr="$1" pkg=() deps=()
     command -v llama-server >/dev/null 2>&1 && { ok "llama-server already installed"; return 0; }
     case "${mgr}" in
-        apt) apt-get install -y llama.cpp 2>/dev/null || true ;;
-        dnf) dnf install -y llama-cpp 2>/dev/null || true ;;
+        apt) pkg=(apt-get install -y llama.cpp)
+             deps=(apt-get install -y git cmake build-essential libssl-dev) ;;
+        dnf) pkg=(dnf install -y llama-cpp)
+             deps=(dnf install -y git cmake gcc-c++ make openssl-devel) ;;
     esac
+    "${pkg[@]}" 2>/dev/null || true
     command -v llama-server >/dev/null 2>&1 && { ok "llama-server installed from distro package"; return 0; }
 
     info "No llama.cpp package available — building llama-server from source..."
-    case "${mgr}" in
-        apt) apt-get install -y git cmake build-essential libssl-dev ;;
-        dnf) dnf install -y git cmake gcc-c++ make openssl-devel ;;
-    esac || die "Could not install llama.cpp build dependencies"
+    "${deps[@]}" || die "Could not install llama.cpp build dependencies"
     local src; src=$(mktemp -d)
     git clone --depth 1 https://github.com/ggml-org/llama.cpp "${src}" \
         || die "Could not clone llama.cpp"
