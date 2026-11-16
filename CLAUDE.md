@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The AI is a first-class kernel citizen via a custom character device (`/dev/jarvis`). Three layers:
+JARVIS OS — an AI-native Linux distribution built on an Arch Linux base. The AI is a first-class kernel citizen via a custom character device (`/dev/jarvis`). Three layers:
 
 1. **`linux-jarvisos/`** — kernel source (cloned, see `sources.conf`) with JARVIS drivers (`drivers/jarvis/`)
 2. **`Project-JARVIS/`** — AI daemon repo (dispatch + dmcp + contextor)
@@ -19,8 +19,8 @@ JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The
 
 ## Build Config
 
-`build.config` at the **project root** (not `iso-build-scripts/`) is sourced by all scripts and the Makefile:
-- `PROJECT_ROOT` — auto-detected via `dirname`; override only if needed
+`build.config` at the **project root** (not `iso-build-scripts/`) is sourced by all scripts and the Makefile. Create it once with `cp iso-build-scripts/build.config.example build.config` (gitignored).
+- `PROJECT_ROOT` — defaults to the directory holding `build.config`, i.e. the repo root; override only if needed. The Makefile ignores it and derives the root from its own location; the step scripts use it
 - `ISO_FILE` — source ISO filename (currently `archlinux-x86_64.iso`); place file in `build-deps/`
 - `BUILD_DIR`, `BUILD_DEPS_DIR` — relative to `PROJECT_ROOT`
 
@@ -28,41 +28,42 @@ JARVIS OS — an AI-native Linux distribution built on an Arch/CachyOS base. The
 
 ## Build Commands
 
-All ISO build commands run from `iso-build-scripts/`:
+All ISO build commands run from the **repo root**, not `iso-build-scripts/`. The Makefile recipes call each step script without `cd`, and every script runs `source build.config` from the current directory, so `cd iso-build-scripts && make all` fails at step 1.
 
 ```bash
-cd iso-build-scripts
+make -f iso-build-scripts/Makefile prereq          # Install host build tools (detects Arch/Fedora/Ubuntu/openSUSE)
+make -f iso-build-scripts/Makefile all             # Full build: steps 1–7 + 3b (prereq must be run first)
+make -f iso-build-scripts/Makefile rest            # Resume interrupted build (skips completed steps)
+make -f iso-build-scripts/Makefile status          # Show which steps are done
+make -f iso-build-scripts/Makefile clean           # Wipe build/iso-extract/ and build/iso-rootfs/
 
-make prereq          # Install host build tools (detects Arch/Fedora/Ubuntu/openSUSE)
-make all             # Full build: steps 1–7 + 3b (prereq must be run first)
-make rest            # Resume interrupted build (skips completed steps)
-make status          # Show which steps are done
-make clean           # Wipe build/iso-extract/ and build/iso-rootfs/
+make -f iso-build-scripts/Makefile step1           # Extract base ISO
+make -f iso-build-scripts/Makefile step2           # Unsquash rootfs
+make -f iso-build-scripts/Makefile step3           # Install KDE Plasma Wayland + all packages into rootfs
+make -f iso-build-scripts/Makefile step3b          # Build linux-jarvisos kernel (bottleneck: 20–60 min first run)
+make -f iso-build-scripts/Makefile step4           # Install Project-JARVIS daemon
+make -f iso-build-scripts/Makefile step5           # Install TUI installer (jarvis-install)
+make -f iso-build-scripts/Makefile step6           # Repack SquashFS
+make -f iso-build-scripts/Makefile step7           # Assemble final ISO
 
-make step1           # Extract base ISO
-make step2           # Unsquash rootfs
-make step3           # Install KDE Plasma Wayland + all packages into rootfs
-make step3b          # Build linux-jarvisos kernel (bottleneck: 20–60 min first run)
-make step4           # Install Project-JARVIS daemon
-make step5           # Install TUI installer (jarvis-install)
-make step6           # Repack SquashFS
-make step7           # Assemble final ISO
-
-make JOBS=8 step3b   # Parallel kernel build (default: nproc)
+make -f iso-build-scripts/Makefile JOBS=8 step3b   # Parallel kernel build (default: nproc)
 ```
 
 Kernel-only build (host install or package-only):
 ```bash
-bash iso-build-scripts/03b-build-kernel.sh --host-install   # Build + install on running system
-bash iso-build-scripts/03b-build-kernel.sh                  # Build packages only → build/kernel-pkg/
+bash iso-build-scripts/03b-build-kernel.sh --host-install   # Build + install on running system (needs build.config)
 SKIP_KERNEL_BUILD=1 bash iso-build-scripts/03b-build-kernel.sh --host-install  # Skip recompile
+./build-kernel.sh                                           # Build packages only → ./kernel-pkg/ (no build.config needed)
 ```
+
+`03b-build-kernel.sh` with no flag is the ISO pipeline mode (`make step3b`), not a packages-only build: it exits unless the step 2/3 rootfs exists, then installs the kernel into it.
 
 Test in QEMU:
 ```bash
-./iso-build-scripts/booter.sh         # UEFI boot
-./iso-build-scripts/booter.sh --bios  # BIOS boot
+./iso-build-scripts/booter.sh   # Boots the newest build/jarvisos-*-x86_64.iso
 ```
+
+`booter.sh` takes no flags (a `--bios` argument is silently ignored). It boots UEFI when it finds OVMF (`edk2-ovmf`) and falls back to legacy BIOS otherwise.
 
 Standalone agent (no ISO needed):
 ```bash
@@ -146,7 +147,7 @@ dmcp/              (branch: main)
 dispatch/          (branch: main)
 ```
 
-`cachyos-calamares` is gone, not just discontinued. Ignore any stale references to it elsewhere (the actual installer is `jarvis-install.sh`, see below).
+`cachyos-calamares` is gone, not just discontinued. Ignore any stale references to it elsewhere (the actual installer is `jarvis-install.sh`, see above).
 
 ### Why dispatch/ and dmcp/ appear twice
 
@@ -162,7 +163,15 @@ bash iso-build-scripts/fetch-sources.sh   # or: fetch-sources.sh dmcp
 
 ## Security Research Context
 
-This repo is a cybersecurity research platform. The README lists a 7-threat taxonomy discovered during live operation — including a novel "forgetful context" threat (#7) where the LLM silently drops security constraints mid-session. Active open work items: scoped sudo rules, persistent constraint register in the daemon, GPG verification for `dmcp` server manifests, and path-based rules in `jarvis_policy.c` for writes to `/etc`, `/usr`, `/boot`.
+This repo is a cybersecurity research platform. The threat taxonomy is canonical in `Project-JARVIS/docs/SECURITY-ARCHITECTURE.md`, and the README's threat table must match it. There are **six** threats, found during live operation: (1) Malicious MCP Servers, (2) Prompt Injection, (3) Misleading MCP Server Usage, (4) Unauthorized Sudo via MCP, (5) Sudo Capability Exploitation, (6) Bloated Context (novel). "Forgetful Context", where the LLM silently drops security constraints mid-session, was once listed as a seventh threat. It was merged back into Bloated Context in 2026-08.
+
+Open work items:
+- Generalize the persistent constraint register. Today `jarvis/core/constraint_store.py` (Project-JARVIS #214) covers path-prefix deny rules only.
+- Wire `KernelClient.policy_check` into the daemon's execution path. It has no callers yet.
+- Add keyed signature verification for `dmcp` server manifests. Today `dmcp` checks `integrity.manifestSha256` only.
+- Add path-based rules in `jarvis_policy.c` for writes to `/etc`, `/usr`, `/boot`.
+
+The sudo threats (#4, #5) are covered by the TLA gate's host floor (Project-JARVIS #159 and #162, both closed).
 
 ## Current Status
 

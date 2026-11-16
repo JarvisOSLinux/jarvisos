@@ -55,7 +55,7 @@ help:
 	@echo ""
 	@echo "Available steps:"
 	@echo "  $(GREEN)make prereq$(NC) - Install build prerequisites (step 0)"
-	@echo "  $(GREEN)make step1$(NC)  - Extract source CachyOS ISO"
+	@echo "  $(GREEN)make step1$(NC)  - Extract source Arch Linux ISO"
 	@echo "  $(GREEN)make step2$(NC)  - Unsquash filesystem from ISO"
 	@echo "  $(GREEN)make step3$(NC)  - Install KDE Plasma Wayland + all packages"
 	@echo "  $(GREEN)make step3b$(NC) - Build linux-jarvisos custom kernel (JARVIS drivers)"
