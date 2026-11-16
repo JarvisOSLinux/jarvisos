@@ -929,11 +929,15 @@ fi
 
 # 2. Check the local AI engine
 step "Checking the local AI engine..."
+if ! command -v llama-server >/dev/null 2>&1; then
+    warn "llama-server missing, installing llama-cpp..."
+    sudo pacman -S --noconfirm --needed llama-cpp || true
+fi
 if command -v llama-server >/dev/null 2>&1; then
     ok "llama-server found"
 else
-    fail "llama-server missing"
-    echo -e "    ${DIM}Install it: sudo pacman -S llama-cpp${NC}"
+    fail "Could not install llama-cpp"
+    echo -e "    ${DIM}Check your connection and run: sudo /usr/local/bin/jarvis-welcome.sh${NC}"
     echo ""
     echo -e "${DIM}  Press Enter to close...${NC}"
     read -r
