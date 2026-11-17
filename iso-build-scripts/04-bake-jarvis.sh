@@ -25,6 +25,7 @@ BUILD_DIR="${PROJECT_ROOT}${BUILD_DIR}"
 SQUASHFS_ROOTFS="${BUILD_DIR}/iso-rootfs"
 BUILD_DEPS_DIR="${PROJECT_ROOT}${BUILD_DEPS_DIR}"
 PROJECT_JARVIS="${PROJECT_ROOT}/Project-JARVIS"
+LIB_SH="${SCRIPTS_DIR}/tasks/lib.sh"
 
 # Colors
 RED='\033[0;31m'
@@ -85,6 +86,9 @@ cleanup() {
 
 # Trap to ensure cleanup on exit
 trap cleanup EXIT
+
+# Run shell code inside the rootfs with the installer helpers (tasks/lib.sh) loaded
+in_rootfs() { { cat "${LIB_SH}"; echo "$1"; } | sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -s; }
 
 # Step 3: Install system dependencies for JARVIS
 echo -e "${BLUE}Installing system dependencies for JARVIS...${NC}"
@@ -329,13 +333,10 @@ if [ "${_DMCP_BINARY_READY}" = "1" ]; then
             echo -e "${YELLOW}Warning: ${DMCP_DIR}/policy missing — root MCP calls will ask for the password on every call${NC}"
         fi
 
-        # Timed unlock for root MCP calls: `sudo jarvis-unlock 4h` (Project-JARVIS#310)
-        sudo install -Dm644 "${PROJECT_ROOT}/packages/polkit/49-jarvis-unlock.rules" \
-            "${SQUASHFS_ROOTFS}/usr/share/polkit-1/rules.d/49-jarvis-unlock.rules"
-        sudo install -Dm755 "${PROJECT_ROOT}/packages/polkit/jarvis-unlock-check" \
-            "${SQUASHFS_ROOTFS}/usr/lib/jarvis/jarvis-unlock-check"
-        sudo install -Dm755 "${PROJECT_ROOT}/packages/polkit/jarvis-unlock" \
-            "${SQUASHFS_ROOTFS}/usr/bin/jarvis-unlock"
+        # Timed unlock for root MCP calls: `sudo jarvis-unlock 4h` (Project-JARVIS#310).
+        # Runs the jarvisos-polkit PKGBUILD's package() with the rootfs as pkgdir.
+        sudo bash -c 'cd "$1" && . ./PKGBUILD && pkgdir="$2" && package' _ \
+            "${PROJECT_ROOT}/packages/polkit" "${SQUASHFS_ROOTFS}"
 
         # System-level MCP sources list (empty by default; registry URLs added here)
         sudo mkdir -p "${SQUASHFS_ROOTFS}/etc/mcp"
@@ -660,14 +661,8 @@ sudo arch-chroot "${SQUASHFS_ROOTFS}" bash -c "
 echo -e "${GREEN}✓ .env defaults patched${NC}"
 
 # Default provider pool: one local llama.cpp model (downloaded on first boot)
-sudo tee "${SQUASHFS_ROOTFS}/etc/jarvis/providers.json" > /dev/null << 'PROVIDERS'
-{
-  "providers": [
-    {"name": "local", "type": "llamacpp", "model": "Qwen/Qwen3-4B-GGUF:Q4_K_M"}
-  ]
-}
-PROVIDERS
-sudo arch-chroot "${SQUASHFS_ROOTFS}" chown jarvis:jarvis /etc/jarvis/providers.json
+# shellcheck disable=SC2016  # expands inside the rootfs, where lib.sh defines it
+in_rootfs 'write_jarvis_providers "${JARVIS_DEFAULT_MODEL}"'
 
 # Step 13: Download Vosk STT model
 echo -e "${BLUE}Downloading Vosk STT model...${NC}"
@@ -721,60 +716,7 @@ fi
 # Step 15: Create first-boot service for model pulls
 echo -e "${BLUE}Creating first-boot service...${NC}"
 
-sudo tee "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-first-boot.sh" > /dev/null << 'FIRSTBOOT'
-#!/bin/bash
-# JARVIS first-boot setup: pull the chat and embedding models as the jarvis
-# user. A failed pull leaves no marker, so the next boot retries.
-MARKER="/var/lib/jarvis/.setup-done"
-LOG="/var/log/jarvis/first-boot.log"
-mkdir -p /var/log/jarvis
-exec > >(tee -a "$LOG") 2>&1
-echo "=== JARVIS first-boot $(date) ==="
-[ -f "$MARKER" ] && echo "Setup already completed." && exit 0
-
-MODEL=$(python3 -c 'import json
-p = json.load(open("/etc/jarvis/providers.json"))["providers"]
-print(next((x["model"] for x in p if x.get("type") == "llamacpp"), ""))' 2>/dev/null || true)
-EMBED=$(grep -E '^EMBED_MODEL=' /usr/lib/jarvis/.env 2>/dev/null | cut -d= -f2- || true)
-[ -z "$EMBED" ] && EMBED="nomic-ai/nomic-embed-text-v1.5-GGUF:Q8_0"
-
-for spec in "$MODEL" "$EMBED"; do
-    [ -z "$spec" ] && continue
-    echo "Pulling $spec ..."
-    /usr/bin/jarvis model pull "$spec" || { echo "Pull failed: $spec"; exit 1; }
-done
-touch "$MARKER"
-echo "First-boot setup complete."
-FIRSTBOOT
-
-sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-first-boot.sh"
-
-sudo tee "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service" > /dev/null << 'SETUPSVC'
-[Unit]
-Description=JARVIS First-Boot Setup (pull LLM models)
-After=network-online.target
-Wants=network-online.target
-ConditionPathExists=!/var/lib/jarvis/.setup-done
-
-[Service]
-Type=oneshot
-User=jarvis
-Group=jarvis
-ExecStart=/usr/local/bin/jarvis-first-boot.sh
-RemainAfterExit=yes
-TimeoutStartSec=3600
-Environment=JARVIS_CONFIG_DIR=/etc/jarvis
-Environment=JARVIS_DATA_DIR=/var/lib/jarvis
-Environment=JARVIS_LOG_DIR=/var/log/jarvis
-Environment=JARVIS_MODELS_DIR=/var/lib/jarvis/models
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-SETUPSVC
-
-sudo chmod 644 "${SQUASHFS_ROOTFS}/usr/lib/systemd/system/jarvis-setup.service"
+in_rootfs install_jarvis_first_boot
 echo -e "${GREEN}✓ First-boot service created${NC}"
 
 # Step 16: Enable services in rootfs (systemctl enable just creates symlinks in chroot)
@@ -813,8 +755,10 @@ echo -e "${GREEN}✓ XDG autostart entries created${NC}"
 # The jarvis-setup.service still runs as a systemd fallback, but they
 # coordinate via the same /var/lib/jarvis/.setup-done marker.
 echo -e "${BLUE}Creating JARVIS welcome script...${NC}"
-sudo tee "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-welcome.sh" > /dev/null << 'WELCOME_EOF'
-#!/bin/bash
+{
+    echo '#!/bin/bash'
+    bash -c '. "$1" && declare -p JARVIS_DEFAULT_MODEL && declare -f as_jarvis jarvis_configured_model' _ "${LIB_SH}"
+    cat << 'WELCOME_EOF'
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  JARVIS OS — First-Boot Welcome & Setup                        ║
 # ║  Opens in a terminal on first login after installation.         ║
@@ -945,12 +889,8 @@ else
 fi
 
 # 3. Read configured model
-MODEL=$(python3 -c 'import json
-p = json.load(open("/etc/jarvis/providers.json"))["providers"]
-print(next((x["model"] for x in p if x.get("type") == "llamacpp"), ""))' 2>/dev/null || true)
-[ -z "$MODEL" ] && MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-JENV="JARVIS_CONFIG_DIR=/etc/jarvis JARVIS_DATA_DIR=/var/lib/jarvis JARVIS_MODELS_DIR=/var/lib/jarvis/models"
-as_jarvis() { sudo -u jarvis env ${JENV} /usr/bin/jarvis "$@"; }
+MODEL=$(jarvis_configured_model)
+[ -z "$MODEL" ] && MODEL="${JARVIS_DEFAULT_MODEL}"
 
 # 4. Check if model already downloaded
 step "Checking for AI model: ${MODEL}..."
@@ -1031,6 +971,7 @@ if read -r -t 60; then
     exec jarvis chat
 fi
 WELCOME_EOF
+} | sudo tee "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-welcome.sh" > /dev/null
 
 sudo chmod 755 "${SQUASHFS_ROOTFS}/usr/local/bin/jarvis-welcome.sh"
 echo -e "${GREEN}✓ Welcome script created${NC}"

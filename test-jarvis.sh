@@ -27,6 +27,10 @@ VOSK_URL="https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_SCRIPT="${SCRIPT_DIR}/jarvis_agent.py"
 
+# Shared RAM-to-model table; sourced before the helpers below so ours win
+# shellcheck source=iso-build-scripts/tasks/lib.sh
+source "${SCRIPT_DIR}/iso-build-scripts/tasks/lib.sh"
+
 RED='\033[0;31m'; YEL='\033[1;33m'; GRN='\033[0;32m'
 CYN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
 PRP='\033[0;35m'
@@ -146,14 +150,7 @@ if ! curl -sf --max-time 3 "${LLM_URL}/health" &>/dev/null; then
         sudo pacman -S --noconfirm --needed llama-cpp ggml-vulkan || die "llama-cpp install failed"
     fi
 
-    if [[ -z "$JARVIS_MODEL" ]]; then
-        MEM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
-        if (( MEM_AVAIL_MB > 20000 )); then
-            JARVIS_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M"
-        else
-            JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-        fi
-    fi
+    [[ -n "$JARVIS_MODEL" ]] || JARVIS_MODEL=$(jarvis_recommended_model)
 
     LLM_PORT="${LLM_URL##*:}"
     LLM_LOG="${JARVIS_DIR}/llama-server.log"

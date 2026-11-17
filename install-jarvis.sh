@@ -38,6 +38,11 @@ JARVIS_GROUP="jarvis"
 
 PROJECT_JARVIS="${REPO_ROOT}/Project-JARVIS"
 UDEV_RULES="${REPO_ROOT}/packages/udev/99-jarvis.rules"
+LIB_SH="${REPO_ROOT}/iso-build-scripts/tasks/lib.sh"
+
+# Shared installer helpers; sourced before the helpers below so ours win
+# shellcheck source=iso-build-scripts/tasks/lib.sh
+source "${LIB_SH}"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 BLU='\033[0;34m'; GRN='\033[0;32m'; YEL='\033[1;33m'
@@ -48,6 +53,8 @@ ok()   { echo -e "${GRN}✓${NC}  $*"; }
 warn() { echo -e "${YEL}⚠${NC}   $*"; }
 die()  { echo -e "${RED}[FATAL]${NC} $*" >&2; exit 1; }
 info() { echo -e "${BLU}  →${NC} $*"; }
+# Run a lib.sh function as root
+lib_sudo() { sudo bash -c '. "$1"; shift; "$@"' _ "${LIB_SH}" "$@"; }
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 DAEMON_ONLY=0
@@ -133,13 +140,7 @@ select_model() {
     if [[ -n "$JARVIS_MODEL" ]]; then
         info "Model: ${JARVIS_MODEL} (user-specified)"; return
     fi
-    if   (( ram_gb >= 32 )); then JARVIS_MODEL="Qwen/Qwen3-14B-GGUF:Q4_K_M"
-    elif (( ram_gb >= 16 )); then JARVIS_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M"
-    elif (( ram_gb >= 8  )); then JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-    else
-        warn "< 8 GB RAM — model skipped. Set JARVIS_MODEL manually."
-        NO_MODEL=1; JARVIS_MODEL="Qwen/Qwen3-4B-GGUF:Q4_K_M"
-    fi
+    JARVIS_MODEL=$(jarvis_recommended_model)
     info "RAM: ${ram_gb}GB → model: ${JARVIS_MODEL}"
 }
 select_model
@@ -280,12 +281,11 @@ hdr "llama.cpp"
 if command -v llama-server &>/dev/null; then
     ok "llama-server: $(command -v llama-server)"
 elif command -v pacman &>/dev/null; then
-    sudo pacman -S --noconfirm --needed llama-cpp ggml-vulkan vulkan-icd-loader
-    ok "llama-cpp installed"
+    lib_sudo install_llama_cpp_arch
 elif command -v apt-get &>/dev/null; then
-    sudo bash -c ". '${REPO_ROOT}/iso-build-scripts/tasks/lib.sh'; install_llama_cpp_generic apt"
+    lib_sudo install_llama_cpp_generic apt
 elif command -v dnf &>/dev/null; then
-    sudo bash -c ". '${REPO_ROOT}/iso-build-scripts/tasks/lib.sh'; install_llama_cpp_generic dnf"
+    lib_sudo install_llama_cpp_generic dnf
 else
     die "No supported package manager for installing llama.cpp"
 fi
@@ -323,9 +323,7 @@ fi
 
 # Provider pool: one local llama.cpp model
 if [[ ! -f "${CONFIG_DIR}/providers.json" ]]; then
-    printf '{\n  "providers": [\n    {"name": "local", "type": "llamacpp", "model": "%s"}\n  ]\n}\n' \
-        "$JARVIS_MODEL" | sudo tee "${CONFIG_DIR}/providers.json" > /dev/null
-    sudo chown "${JARVIS_USER}:${JARVIS_GROUP}" "${CONFIG_DIR}/providers.json"
+    lib_sudo write_jarvis_providers "$JARVIS_MODEL"
     ok "Providers: ${CONFIG_DIR}/providers.json"
 fi
 
