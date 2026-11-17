@@ -1,7 +1,7 @@
 # Pinned sibling-repo commits, read by iso-build-scripts/fetch-sources.sh.
 # Updated by .github/workflows/track-subsystems.yml when a repo pushes, or by
 # fetch-sources.sh --update-lock.
-Project-JARVIS=ce50ed514b8f29011ad62960182b9bc7381ebf5a
-dmcp=dcc19801b92fee3d736742a8ca976122fce6c5a1
-dispatch=6319da34ebf6cd4e1ba9669017abed415cbd1afe
-linux-jarvisos=45b6eb9563fa82658ae839ed7b693bf8bcc868af
+Project-JARVIS=9047223c53a2bed289b1587a22b737a199126363
+dmcp=80b5f44fb560811f0a7a680508249cf6634a99eb
+dispatch=da468649bc9b874516f45f7f641b9caf355df456
+linux-jarvisos=da442068622128cdb8d4c09de5b4bfc67ed6134d
