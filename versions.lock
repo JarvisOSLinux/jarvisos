@@ -2,6 +2,6 @@
 # Updated by .github/workflows/track-subsystems.yml when a repo pushes, or by
 # fetch-sources.sh --update-lock.
 Project-JARVIS=54f15211533aebafb6e8027a8653ab235770cb8a
-dmcp=80b5f44fb560811f0a7a680508249cf6634a99eb
+dmcp=baf5a12ffcece892479d7c73e22e0130b8ba059b
 dispatch=da468649bc9b874516f45f7f641b9caf355df456
 linux-jarvisos=da442068622128cdb8d4c09de5b4bfc67ed6134d
