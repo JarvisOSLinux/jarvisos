@@ -3,10 +3,14 @@
 # This file defines all variables used by the build scripts and Makefile.
 # 
 # To use this configuration:
-#   1. Copy this file to build.config: cp build.config.example build.config
+#   1. From the repo root, copy this file there as build.config:
+#        cp iso-build-scripts/build.config.example build.config
+#      The Makefile only looks for build.config at the repo root.
 #   2. Adjust the values below to match your system and preferences
 #   3. All paths starting with "/" are relative to PROJECT_ROOT
 #   4. Absolute paths can also be used if needed
+#   5. Run make from the repo root: make -f iso-build-scripts/Makefile <target>
+#      Each step script runs `source build.config` from the current directory.
 #
 # NOTE: This file is sourced by bash scripts, so use bash syntax.
 #       Variables are also used in Makefile, so ensure compatibility.
@@ -18,7 +22,10 @@
 # PROJECT_ROOT: Absolute path to the JARVIS OS project root directory
 # This should be the directory containing the iso-build-scripts/ folder
 # Example: /home/user/jarvisos or /path/to/jarvisos
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Default: the directory holding this file. Once copied to the repo root as
+# build.config, that is the repo root. (The Makefile works out the root from
+# its own location and does not read this value; the step scripts do.)
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # SCRIPTS_DIR: Path to the ISO build scripts directory (relative to PROJECT_ROOT)
 # This is where all ISO build scripts (01-extract-iso.sh, etc.) are located
@@ -86,7 +93,7 @@ BUILD_LOG_FILE="/build/build.log"
 # Example configuration for a typical setup:
 #
 #   PROJECT_ROOT="/home/user/jarvisos"
-#   SCRIPTS_DIR="/scripts"
+#   SCRIPTS_DIR="/iso-build-scripts"
 #   BUILD_DIR="/build"
 #   BUILD_DEPS_DIR="/build-deps"
 #   ISO_EXTRACT_DIR="/iso-extract"
